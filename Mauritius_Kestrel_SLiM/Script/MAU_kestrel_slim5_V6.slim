@@ -1,0 +1,2664 @@
+// Written by Hernán E. Morales
+// hernanm [at] sund.ku.dk
+// cite:
+// Dussex, N., Morales, H. E., Grossen, C., Dalén, L., & van Oosterhout, C. (2023). Purging and accumulation of genetic load in conservation. Trends in Ecology & Evolution, 38(10), 961-969.
+// Liu, X., Milesi, E., Fontsere, C., Owens, H. L., Heinsohn, R., Gilbert, M. T. P., ... & Morales, H. E. (2025). Time-lagged genomic erosion and future environmental risks in a bird on the brink of extinction. Proceedings B, 292(2043), 20242480.
+// van Oosterhout, C., Speak, S. A., Birley, T., Bortoluzzi, C., Percival-Alwyn, L., Urban, L. H., ... & Morales, H. E. (2022). Genomic erosion in the assessment of species extinction risk and recovery potential. BioRxiv, 2022-09.
+// v2 takes demo trajectory and life table
+// v2 monogamosu mating
+// v3 added minK
+// v3 added demographic stages
+// v3 added conservation scenarios
+// v3.1 modify stages values based on tests stage 4 50% more mortality; stage 5 40% more mortality and 40% less probability of breeding
+// v3.1 switch for types of collapses
+// v3.1 switch for bottlenck = 4
+// v3.2 Ho and pi for all mutations in chromsome
+// v3.2 fixed load
+// v3.2 full mutation summary
+
+
+// MAU_kestrel_slim5_V6.slim: Edited by Anna Stuart: V4_AS_MAU_kestrel_slim4_v3.2.slim - updated to SLiM5, added captive breeding,edited the breeding and mortality rates for every epoch and conservation scenario to reproduce reality, enforced bottleneck 4, edited the exponential decline rates, indvs are male/female (sex is initialised), sex-specific monagomous pairing, updated mutation rate and added output files including a combined ROH, fitness and recruitment output file (for different definitions of recruitment), generally did significant testing to get the output to match up to reality
+
+
+initialize() {
+	if (exists("DFE")==0){
+		defineConstant("DFE",1); // 0 = custom; 1 = Kardos
+	}
+	
+	if (exists("burnRUN")==0){
+		defineConstant("burnRUN",1); // 0 = recap BURN in run ; 1 = full nonWF run ; 2 = post run (ignore does not work) ; 3 = full WF run ; 4 load recap
+	}
+	
+	if (exists("runType")==0){
+		defineConstant("runType",3); // 0 = no mutations ; 1 = neutral only ; 2 = deleterious only (not working) ; 3 = both
+	}
+	
+	if (exists("mating")==0){
+		defineConstant("mating",1); // 0 = random; 1 = monogamous
+	}
+	
+	if (exists("scenario")==0){
+		defineConstant("scenario",0); // simulation scenarios
+		// 0 = baseline (historical + ongoing conservation)
+		// 1 = no conservation ever (post-crash conditions persist) “no conservation” counterfactual.
+		// 2 = conservation stops after 2025 (today) 
+	}
+	
+	if (exists("decline")==0){
+		defineConstant("decline",1); // Type of decline: 0 = linear; 1 = exponential; 2 = logistic
+	}
+	
+	if (exists("minK")==0){
+		defineConstant("minK",150); // minimum carrying capacity
+	}
+	
+	if (exists("btl")==0){
+		defineConstant("btl",4); // size of btl, if 0, no further btl
+	}
+	
+	
+	if (exists("Ktarget")==0){
+		defineConstant("Ktarget",2.0); // a lot of genetic load could drive pop size down, if you don't want that the carrying capacity needs to be increase. This is done with the adaptive K (Ktarget), how many times the intended K can be corrected e.g., 2 is twice as much the target K
+	}
+	
+	
+	if (exists("Na")==0){
+		defineConstant("Na",asInteger(runif(1,6000,12000))); // Na size - Census population size (in burnRUN = 3 Na == Ne, in all others Ne is an emerging parameter from the simulation
+		//		defineConstant("Na",2000); // Na size - Census population size (in burnRUN = 3 Na == Ne, in all others Ne is an emerging parameter from the simulation
+	}
+	
+	if (exists("Nmin")==0){
+		defineConstant("Nmin",20); // Nmin for initial decline
+	}
+	
+	if (exists("burnLen")==0){
+		defineConstant("burnLen",40000); // burn-in in ticks, for burnRUN 1 or 3 this should be ~ Ne*10, for burnRUN 4 normally 2000 is enough for deleterious mutations to reach equilibrium. This param is irrelevant for burnRUN 0
+	}
+	
+	if (exists("seed")==0){
+		defineConstant("seed",12345678); // seed
+	}
+	
+	if (exists("basePath")==0){
+		defineConstant("basePath", "/home/as2376/slim/Green_Status_Modelling/Kestrel");  // path of the output directory
+	}
+	
+	if (exists("prepRun")== 0){
+		defineConstant("prepRun",0); // 1 = estimate gen time
+	}
+	
+	if (prepRun == 1){
+		defineGlobal("GENTIME", rep(NAN, 100));
+	}
+	
+	if (exists("ROHest")== 0){
+		defineConstant("ROHest",1); // estiate ROH 1 = yes, else no 
+	}
+	
+	
+	//	if (exists("steps")==0){
+	//		defineConstant("steps",200); //  simulations teps to estimate gen time (old way to estimate gen time)
+	//	}
+	
+	
+	if (exists("mu_cond")==0){
+		defineConstant("mu_cond",3); // mean for gamma distribution for reproductive output per reproductive step
+	}
+	if (exists("k_shape")==0){
+		defineConstant("k_shape",40); // shape for gamma distribution for reproductive output per reproductive step
+	}
+	
+	if (exists("LifeTable")==0){
+		defineConstant("LifeTable", basePath + "/LifeTable_MK.txt"); //  Input LifeTable file
+	}
+	
+	if (exists("demo_west")==0){
+		defineConstant("demo_west", basePath + "/demo_recovery_west.txt"); //  Inout LifeTable file
+	}
+	
+	if (exists("demo_east")==0){
+		defineConstant("demo_east", basePath + "/demo_recovery_east.txt"); //  Inout LifeTable file
+	}
+	
+	X=readFile(LifeTable);
+	Ages=	sapply(X[1:(length(X)-1)],"asInteger(strsplit(applyValue,'\t')[0]);");
+	Mort=	sapply(X[1:(length(X)-1)],"asFloat(strsplit(applyValue,'\t')[1]);");
+	defineConstant("lifeSpan",max(Ages));
+	defineConstant("prob_mort_base",Mort);
+	
+	if (exists("rep1st")==0){
+		defineConstant("rep1st",1); //  age at first reproduction
+	}
+	defineConstant("repLast", 12); // age at last reproduction 
+	
+	if (exists("T_btl")==0){
+		defineConstant("T_btl",10); // generation at which the bottleneck starts after burnIn
+	}
+	
+	// path of genomic feature file
+	if (exists("coord_file_in")==0){
+		defineConstant("coord_file_in", basePath + "/coords_SLiM_GCF_000247815.1_FicAlb1.5_chr12.txt"); //
+	}
+	// path of recombination map file
+	if (exists("rho_file_in")==0){
+		defineConstant("rho_file_in", basePath + "/out_rho4Ne_win2e+05_col.hun.snpPair_runALL_chr12.txt"); //
+	}
+	
+	// input deleterious DFE see Dussex et al. 2023; TREE - DOI: 10.1016/j.tree.2023.05.008
+	if (exists("hs_in")==0){
+		defineConstant("hs_in", basePath + "/1_hs_prod1_hmode1_Ne20K_step40K.txt"); //
+	}
+	
+	if (exists("g")==0){
+		defineConstant("g",18000); // number of genes
+	}
+	
+	if (exists("geneLength")==0){
+		defineConstant("geneLength",1500); // gene Len
+	}
+	
+	if (exists("chrNum")==0){
+		defineConstant("chrNum",20); // number of chromosomes
+	}
+	
+	if (exists("muChrom")==0){
+		defineConstant("muChrom",5.0e-9); // mutation rate for chromosome 
+	}
+	
+	if (exists("muExome")==0){
+		defineConstant("muExome",5.0e-9); // mutation rate for exome 
+	}
+	
+	if (exists("rho")==0){
+		defineConstant("rho",1e-04); //recombination rate for exome
+	}
+	
+	defineConstant("del_mut", 1000); // number of deleterious mutation types
+	
+	Glen=geneLength*g; // exomic region simulated
+	defineConstant("mu", muExome); //  mutation rate
+	
+	if (exists("LhT")==0){
+		defineConstant("LhT",0.05); // Lethal tail of lethal reccesives 0-1 0-100%
+	}
+	
+	// Intilialize
+	initializeSLiMModelType("nonWF");
+	
+	initializeSLiMOptions(keepPedigrees=T);
+	
+	initializeSex("A");   // autosomal sexes; individuals have indv.sex = "M" or "F"
+	
+	defineGlobal("nextPairID", 1);
+	
+	
+	
+	// burnRUN 0 OR generation time run require initializeTreeSeq
+	if(prepRun ==1 | burnRUN == 0){initializeTreeSeq();}
+	
+	// generate deleterious mutations with fixed selection and dominance coefficients 
+	if(DFE == 1)
+	{
+		// s from gamma distribution and 5% lethal tail from Kardos et al 2022 PNAS
+		m2_gamma=sort(rgamma(1e6,-0.05,0.5));
+		defineConstant("LethalTail", 0.05);
+		m2_gamma[sample(0:(size(m2_gamma)-1),asInteger(length(m2_gamma)*LethalTail))]=(-1.0);
+		s=sample(m2_gamma,del_mut);
+		s=sort(s);
+		h=0.5*10^(-13*abs(s)); // negative relationship of h and s from Kardos et al 2022 PNAS
+	}
+	
+	if(DFE == 0)
+	{
+		hs=readFile(hs_in);
+		hs=hs[1:(length(hs)-1)];
+		if(del_mut > length(hs)){print("too many del_mut");}
+		hs=hs[sample(0:(length(hs)-1),del_mut)];
+		s=sapply(hs,"asFloat(strsplit(applyValue,'\t')[3]);");
+		s=-1*s;
+		h=sapply(hs,"asFloat(strsplit(applyValue,'\t')[4]);");
+	}
+	
+	// deleterious mutations are added at different relative proportion to neutral mutation depending on the genomic feature
+	// 1 to 2.31 in exons (more likely to be deleterious than neutral)
+	// 1 to 0.8 in introns (less likely to be deleterious than neutral)
+	// 1 to 0 in intergenic regions (only neutral)
+	prop=rep(1/del_mut,del_mut);
+	prop_exons=sapply(prop,"(applyValue*2.31)/1;");
+	prop_introns=sapply(prop,"(applyValue*0.8)/1;");
+	prop_intergenic=sapply(prop,"(applyValue*0)/1;");
+	lethals = (DFE == 1) ? 0 else asInteger(length(s) * LhT);
+	// add full reccesive lethals if required
+	if(lethals>0){
+		s=c(s,rep(-1,lethals));
+		h=c(h,rep(0.0,lethals));
+		prop = rep(1.0 / (del_mut + lethals), del_mut + lethals);
+		prop_exons=sapply(prop,"(applyValue*2.31)/1;");
+		prop_introns=sapply(prop,"(applyValue*0.8)/1;");
+		prop_intergenic=sapply(prop,"(applyValue*0)/1;");
+	}
+	defineConstant("s_sample",s);
+	defineConstant("h_sample",h);
+	
+	// if running from a recapitated run (tree -> mutated tree -> slim file)
+	if(burnRUN == 4){
+		
+		if (exists("slim_in")==0){
+			defineConstant("slim_in","./out_recap_burn_bnR0_rTpe3_DFE0_brn100_Na1000_prepR0_Ktrgt2.0_mu_cond2_k_shape1.8_lifeSpan15_mrt10.3_rho0.0001_gNo20000_gL400_cN20_muE2.0e-09_muC2.0e-09_LhT0.05_seed1234_recap_fullOut.slim"); // slim burn file
+		}
+	
+	}
+	
+	// define mutation types
+	// deleterious mutations are always m2 to mX where X is the number of deleterious mutations defined
+	// m1 reserved for neutral mutations
+	if(runType == 1 | runType ==3){
+		for (i in 0:(length(prop)-1))
+		{
+			initializeMutationType(i+2, h[i], "f", asFloat(s[i]));
+			//			print("mut:"+(i+2)+" - " + "h:"+h[i]+" - "+ "s:" + asFloat(s[i]));
+		}
+	}
+	
+	// does not work
+	if(runType == 2){
+		for (i in 0:(length(prop)-1))
+		{
+			initializeMutationType(i+1, h[i], "f", asFloat(s[i]));
+			//			print("mut:"+(i+1)+" - " + "h:"+h[i]+" - "+ "s:" + asFloat(s[i]));
+		}
+	}
+	
+	// add neutral mutations
+	if(runType == 0 | runType == 1 | runType ==3){
+		defineConstant("mut_neutral", 1); //  store neutral mutation id
+		initializeMutationType('m1', 0.5, "f", 0.0);         // neutral
+	}
+	
+	// distribution of mutation types relative pre-defined proportions
+	// only neutral	
+	if(runType == 1){
+		initializeGenomicElementType("g1", 1, c(1.0));  // exon
+		initializeGenomicElementType("g2", 1, c(1.0));  // intron
+		initializeGenomicElementType("g3", 1, c(1.0));  // intergeneic
+		initializeGenomicElementType("g4", 1, c(1.0));  // exome
+	}
+	// does not work
+	if(runType == 2){
+		initializeGenomicElementType("g1", 1:(del_mut+lethals), c(prop_exons));  // exon
+		initializeGenomicElementType("g2", 1:(del_mut+lethals), c(prop_introns));  // intron
+		initializeGenomicElementType("g3", 1:(del_mut+lethals), c(prop_intergenic));  // intergeneic
+		initializeGenomicElementType("g4", 1:(del_mut+lethals), c(prop_exons));  // exome
+	}
+	// deleterious and neutral	
+	if(runType == 0 | runType ==3){
+		initializeGenomicElementType("g1", 1:(del_mut+1+lethals), c(1.0,prop_exons));  // exon
+		initializeGenomicElementType("g2", 1:(del_mut+1+lethals), c(1.0,prop_introns));  // intron
+		initializeGenomicElementType("g3", 1:(del_mut+1+lethals), c(1.0,prop_intergenic));  // intergeneic
+		initializeGenomicElementType("g4", 1:(del_mut+1+lethals), c(1.0,prop_exons));  // exome
+	}
+	
+	// with the code below you can assign mutation rates to each element if needed. Here is redudant as mutation rate is flat
+	// this code is still needed to initializeGenomicElement according to the genomic map
+	// the code below generates recombination and mutation maps for the chromsome + exome architecture
+	coord_file=readFile(coord_file_in);
+	mu_rates=c();
+	mu_ends=c();
+	mu_features=c();
+	mu_exome=mu;
+	mu_exon=(2.31*muChrom)/(2.31+1);
+	mu_intron=(0.8*muChrom)/1;
+	mu_interG=(0.8*muChrom)/1;;
+	mu_exome=(2.31*mu_exome)/(2.31+1);
+	
+	for (coord_line in coord_file)
+	{
+		ROW = strsplit(coord_line, "\t");
+		feature = ROW[2];
+		
+		if(feature=="exon") {
+			initializeGenomicElement(g1, asInteger(ROW[3]), asInteger(ROW[4]));
+			mu_rates=c(mu_rates,muChrom);
+			mu_features=c(mu_features,"exon");
+			mu_ends=c(mu_ends,asInteger(ROW[4]));
+		}
+		
+		if(feature=="intron") {
+			initializeGenomicElement(g2, asInteger(ROW[3]), asInteger(ROW[4]));
+			mu_rates=c(mu_rates,muChrom);
+			mu_features=c(mu_features,"intron");
+			mu_ends=c(mu_ends,asInteger(ROW[4]));
+		
+		}
+		if(feature=="non_coding") {
+			initializeGenomicElement(g3, asInteger(ROW[3]), asInteger(ROW[4]));
+			mu_rates=c(mu_rates,muChrom);
+			mu_features=c(mu_features,"interGen");
+			mu_ends=c(mu_ends,asInteger(ROW[4]));
+		}
+	
+	}
+	
+	chromEnd=mu_ends[length(mu_ends)-1]+1;
+	gene_nums = rep(g/chrNum,chrNum);
+	for (i in 1:g){
+		initializeGenomicElement(g1, chromEnd+((i-1)*geneLength)+(i-1), chromEnd+(i*geneLength)+(i-2) );
+		mu_rates=c(mu_rates,mu);
+		mu_features=c(mu_features,"exome");
+		mu_ends=c(mu_ends,chromEnd+(i*geneLength)+(i-2));
+	}
+	
+	
+	if( (runType == 1 | runType == 2 | runType ==3) & prepRun !=1 & burnRUN !=0){
+		initializeMutationRate(mu_rates, mu_ends);
+	}
+	
+	if(runType == 0 | prepRun ==1 | burnRUN == 0){
+		initializeMutationRate(0);
+	}
+	
+	// recombination rate according to recombination map
+	// recombination rate landscape
+	rho_file = readFile(rho_file_in);
+	rates = NULL;
+	ends = NULL;
+	
+	for (rho_line in rho_file)
+	{
+		components = strsplit(rho_line, "\t");
+		ends = c(ends, asInteger(components[2]));
+		rates = c(rates, asFloat(components[7]));
+	}
+	
+	// recombination rates for exome
+	// Multiple chromosomes:
+	for (i in 1:(size(gene_nums)-1)){
+		rates=c(rates, 0, rep(c(rho, 0), asInteger(gene_nums[i-1]-1)), 0.5);
+	}
+	rates=c(rates, 0, rep(c(rho, 0), asInteger(gene_nums[size(gene_nums)-1]-1)));
+	
+	for (i in 1:g){
+		ends=c(ends, chromEnd+(i*geneLength)+(i-2), chromEnd+(i*geneLength)+(i-1));
+	}
+	ends=ends[0:(size(ends)-2)];
+	
+	defineConstant("recomb_ends", ends);
+	defineConstant("recomb_rates", rates);
+	defineConstant("mut_features", mu_features);
+	defineConstant("mut_ends", mu_ends);
+	defineConstant("mut_rates", mu_rates);
+	initializeRecombinationRate(rates, ends);
+	
+	// set seed
+	setSeed(asInteger(seed));
+	
+	// lenght of chr = last position of rho file
+	defineConstant("chromLen", ends[(length(ends)-1)]);
+	defineConstant("seqLength", chromLen);
+
+}
+
+1 early() {
+	
+	// neutral mutations converted to subtitions to be removed if fixed
+	if(runType == 0 | runType == 1 | runType == 3 | prepRun !=1){
+		sim.mutationTypes[sim.mutationTypes.id==mut_neutral].convertToSubstitution=T;
+		//	sim.readFromPopulationFile(slimIn);
+	}
+	
+	// Read burn in file or generate new pop
+	
+	if(burnRUN == 4){
+		sim.readFromPopulationFile(slim_in);
+		POP=sim.subpopulations.id;
+		sim.subpopulations[POP].individuals.age = asInteger(runif(sim.subpopulations[POP].individualCount,0,lifeSpan));
+		sim.subpopulations[POP].tag=Na;
+		sim.subpopulations[POP].setValue("targetN",Na);
+		print(" init pop: " + sim.subpopulations[POP].id + "=" + Na + " - count="+sim.subpopulations[POP].individualCount);
+		if(mating == 1)
+		{
+			p0.individuals.tag=0;
+			p0.individuals.tagF=1.0;
+		}
+	
+	}
+	
+	if(burnRUN != 2 & burnRUN != 4){
+		POP=0;
+		sim.addSubpop("p"+POP,Na);
+		if(burnRUN != 3){sim.subpopulations[POP].individuals.age = asInteger(runif(sim.subpopulations[POP].individualCount,0,lifeSpan));}
+		sim.subpopulations[POP].tag=Na;
+		sim.subpopulations[POP].setValue("targetN",Na);
+		print(" init pop: " + sim.subpopulations[POP].id + "=" + Na + " - count="+sim.subpopulations[POP].individualCount);
+		
+		if(mating == 1)
+		{
+			p0.individuals.tag=0;
+			p0.individuals.tagF=1.0;
+		}
+	
+	}
+	
+	// ensure recruitment tracking fields exist for all starting individuals
+	for (pop in sim.subpopulations)
+		for (ind in pop.individuals)
+			initRecruitTrack(ind);
+	
+	// define time to schedule blocks burn in and ending
+	defineConstant("initGen", sim.cycle);
+	// for most run types this is the initial generation (0) + the number of ticks specified in burnLen
+	if (burnRUN != 0 & burnRUN != 2){
+		defineConstant("burn", asInteger(initGen+(burnLen)));
+	}
+	// for burnRUN 0 to generate the tree to recapitate 100 generations are enough
+	if (burnRUN == 0){
+		defineConstant("burn", 100);
+	}
+	
+	// Population size decline
+	
+	Nmax = Na;
+	rate = 0.006;
+	steps = 1:476;
+	k = 0.024;
+	midpoint = 340;
+	
+	//linear decline
+	if(decline==0){decline_N = asInteger(rev(seq(Nmin,Nmax,length=max(steps))));}
+	//exponential decline
+	if(decline==1){decline_N = asInteger(Nmin + (Nmax - Nmin) * exp(-rate * (steps - min(steps))));}
+	//logistic decline
+	if(decline==2){decline_N = asInteger(Nmin + (Nmax - Nmin) / (1 + exp(k * (steps - midpoint))));}
+	
+	decline_year=1500:1975;
+	
+	west=readFile(demo_west);
+	east=readFile(demo_east);
+	
+	Year_west=sapply(west[1:(length(west)-1)],"asInteger(strsplit(applyValue,'\t')[0]);");
+	N_west=sapply(west[1:(length(west)-1)],"asInteger(strsplit(applyValue,'\t')[1]);");
+	
+	Year_east=sapply(east[1:(length(east)-1)],"asInteger(strsplit(applyValue,'\t')[0]);");
+	N_east=sapply(east[1:(length(east)-1)],"asInteger(strsplit(applyValue,'\t')[1]);");
+	
+	// Ensuring that there is a defined West population before the empirical table begins - decline years plus decline N
+	Year_west=c(decline_year,Year_west);
+	N_west=c(decline_N,N_west);
+	
+	// calender year extracted // West pop size extracted 
+	
+	// Added below code to prevent West sampling at zero 
+	
+	defineConstant("minYear",min(Year_west));
+	Year_slim= Year_west-minYear;
+	
+	defineConstant("g_T_demo", asInteger(burn + T_btl)); // time for bottleneck after burnIn
+	defineConstant("Demo_g",   Year_slim + g_T_demo); // gens for bottleneck  
+	defineConstant("Demo_Ne",  N_west); // Ne west 
+	defineConstant("end",      Demo_g[length(Demo_Ne)-1] + 200);
+	
+	// end 
+	
+	// Stop conservation year (scenario 2) 
+	// Doesn't require stopMgmtYear to exist in the empirical Year_west table.
+	// Instead convert calendar year to generation using the same mapping used for Demo_g:
+	//
+	//   gen(year) = g_T_demo + (year - minYear)
+	//
+	// where minYear is the first calendar year in Year_west,
+	// and g_T_demo is the generation corresponding to minYear.
+	
+	if (exists("stopMgmtYear")==0)
+		defineConstant("stopMgmtYear", 2025);
+	
+	// Don't allow nonsense years earlier than minYear
+	if (stopMgmtYear < minYear)
+		stop("stopMgmtYear=" + stopMgmtYear + " is earlier than minYear=" + minYear);
+	
+	// Convert year to gen even if stopMgmtYear isn't in Year_west
+	defineConstant("stopMgmtGen", asInteger(g_T_demo + (stopMgmtYear - minYear)));
+	
+	// Years where we want to dump the full mutation list for DFE plots
+	if (exists("DFE_YEARS")==0)
+		defineConstant("DFE_YEARS", asInteger(c(1960, 1970, 1974, 1976, 1980, 1994, 2015, 2025)));
+	
+	print("DEBUG stopMgmtYear=" + stopMgmtYear +
+		" minYear=" + minYear +
+		" g_T_demo=" + g_T_demo +
+		" stopMgmtGen=" + stopMgmtGen);
+	
+	// Edited the below a bit so founding is done based on first positive east value instead of zero plus 1 incase there are zeros later in the pop data & added error checking 
+	
+	// Finds the indices in the year_west vector where the year is 1976 
+	idxC = which(Year_west == 1974);
+	
+	// Forces there to be exactly one 1976 in the timeline - errors if 0 or more than 1 
+	if (size(idxC) != 1)
+		stop("Expected exactly one entry for Year_west==1974, found " + size(idxC));
+	
+	// Converting the calender yr into gen - so GenBtl is the gen that corresponds to 1973
+	defineConstant("GenBtl", Demo_g[idxC]);
+	
+	// Makes a copy of the demo_east file - trajectory is saved 
+	N_east_fromFile = N_east;
+	
+	// Creates a vector of zeros with the same length as the decline yr vector bc the east pop doesn't yet exist 
+	N_east_pre      = rep(0, length(decline_year));   // 1500–1975 = 0 in East
+	
+	// Adds those zeros in front of the year based trajectory so it matches the west years 
+	N_east          = c(N_east_pre, N_east_fromFile); // aligned to Year_west
+	
+	// storing Demo_Ne-east as a constant for later use 
+	defineConstant("Demo_Ne_east", N_east);
+	
+	// Finds the first year where the east pop size is above 0 - east pop has been founded
+	fnd = which(N_east > 0);
+	
+	// Will fail if east never becomes more than zero - if its not founded properly 
+	if (size(fnd) == 0)
+		stop("East trajectory never becomes >0; cannot found p1.");
+	
+	
+	// Takes the first indices where east is more than 0 - when east is founded 
+	fndIdx = fnd[0];
+	
+	// Converts year into simulation generation 
+	defineConstant("east_fnd_gen", Demo_g[fndIdx]);
+	
+	// Stores the actual calender year for logging 
+	defineConstant("east_fnd_year", asInteger(Year_west[fndIdx]));
+	
+	// Stores the size the east pop shoud start at
+	defineConstant("east_fnd_N",    asInteger(N_east[fndIdx]));
+	
+	// prints debug - can then check the year & gen & N are correct 
+	print("DEBUG east founded in year " + east_fnd_year + " at gen " + east_fnd_gen + " with N=" + east_fnd_N);
+	
+	
+	// Added: Captive release code 
+	// Defining three arrays ( the calender years of releases, the numbers released into West in those years, the numbers released into East in those years) 
+	defineConstant("rel_years",  asInteger(c(1984, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993)));
+	defineConstant("rel_westN",  asInteger(c(   5,    9,    9,    4,   14,   17,   29,   40,   13)));
+	defineConstant("rel_eastN",  asInteger(c(   0,    0,   12,   22,   39,   16,   21,    3,    7)));
+	
+	// Mapping those calendar years into gens - for each release find the index in Year_west where it happens - fails if any release yr is missing 
+	rel_idx = match(rel_years, Year_west);
+	if (any(rel_idx < 0)) {
+		badY = rel_years[rel_idx < 0];
+		stop("Release year(s) not found in Year_west: " + paste(badY, sep=","));
+	}
+	
+	// Converts release yr to gen
+	defineConstant("rel_gens", Demo_g[rel_idx]);
+	
+	// demographic stages
+	stage_gens=Demo_g[which(Year_west==1800)];
+	defineConstant("stage_1", stage_gens); // Pre-1700: natural conditions with baseline mortality  and high breeding probability
+	stage_gens=Demo_g[which(Year_west==1800 | Year_west==1950)];
+	defineConstant("stage_2", stage_gens); // 1800–1950 early degradation: moderate habitat loss leads to slightly elevated mortality and reduced, variable breeding
+	stage_gens=Demo_g[which(Year_west==1950 | Year_west==1970)];
+	defineConstant("stage_3", stage_gens); // late degradation: intensified human impact increases mortality further and lowers breeding success 
+	stage_gens=Demo_g[which(Year_west==1970 | Year_west==1973)];
+	defineConstant("stage_4", stage_gens); // crash: severe environmental collapse sharply elevates mortality  and depresses breeding, culminating in a four-individual bottleneck
+	stage_gens=Demo_g[which(Year_west==1973 | Year_west==1994)];
+	defineConstant("stage_5", stage_gens); // 1974–1994 intensive management: conservation intervention dramatically improves survival  and boosts breeding 
+	// Stage 6 starts at observed 1994, but ends at scripted 2025.
+	// West data only goes to 2016, so 2025 is converted directly from calendar year to generation.
+	
+	stage_6_start = Demo_g[which(Year_west == 1994)];
+	if (size(stage_6_start) != 1)
+		stop("Expected exactly one 1994 entry for stage_6_start, found " + size(stage_6_start));
+	
+	stage_6_end = asInteger(g_T_demo + (2025 - minYear));
+	
+	defineConstant("stage_6", c(stage_6_start, stage_6_end));
+	defineConstant("stage_7", stage_6_end);   // scalar generation for 2025
+	
+	community.rescheduleScriptBlock(s0,burn,end); // burn
+	community.rescheduleScriptBlock(s1,end,end); // end
+	
+	
+	// the ouput file contains all the parameters of the run
+	defineConstant("outPref",outPref_in+"_bnR"+burnRUN+"_rTpe"+runType+"_scro"+scenario+"_DFE"+DFE+"_brn"+burn+"_Na"+Na+"_prpR"+prepRun+"_Ktgt"+Ktarget+"_mK"+minK+"_dcl"+decline+"_mN"+Nmin+"_btl"+btl+"_mCnd"+mu_cond+"_Kshp"+k_shape+"_mate"+mating+"_rho"+rho+"_gN"+g+"_gL"+geneLength+"_cN"+chrNum+"_mE"+mu+"_mC"+muChrom+"_LhT"+LhT+"_mYr"+minYear+"_gDmo"+g_T_demo+"_seed"+getSeed());
+	
+	//  empty output files to collect results
+	if(prepRun != 1 & burnRUN != 0){
+		out="gen"+"\t"+ "trgN"+"\t"+ "K"+"\t"+ "pop" +"\t"+ "pi" +"\t"+ "N"+"\t"+ "theta" +"\t"+ "theta_pi";
+		writeFile(outPref + "_late_piNeutral.txt",out,append=F);
+		
+		// Log of captive releases
+		out = "gen\tyear\tpop\tnReleased\tnote";
+		writeFile(outPref + "_late_releases.txt", out, append=F);
+		
+		out="gen"+"\t"+ "trgN"+"\t"+ "K"+"\t"+ "pop" +"\t"+ "pi" +"\t"+ "N"+"\t"+ "theta" +"\t"+ "theta_pi";
+		writeFile(outPref + "_late_piTotal.txt",out,append=F);
+		
+		HEAD="gen"+"\t"+ "trgN"+"\t"+ "K" +"\t"+ "pop" +"\t"+ "N" +"\t"+ "mutCount" +"\t"+ "mutFixed" +"\t"+ "meanHet" +"\t"+ "totalLoad" +"\t"+ "relzLoad" +"\t"+ "mskLoad"+"\t"+ "mFit" +"\t"+ "sdFit" +"\t"+ "mCachFit" +"\t"+ "sdCachFit";
+		writeFile(outPref + "_late_loadSummary.txt",HEAD,append=F);
+		
+		out="gen"+"\t"+ "trgN"+"\t"+ "K"+"\t"+ "pop" +"\t"+ "N" +"\t"+ "sample" +"\t"+ "winS" +"\t"+ "winE" +"\t"+ "pi"+"\t"+ "theta" +"\t"+ "theta_pi";
+		writeFile(outPref + "_late_piNeutral_windows.txt",out,append=F);
+		
+		out="gen"+"\t"+ "trgN"+"\t"+ "K"+"\t"+ "pop" +"\t"+ "N" +"\t"+ "sample" +"\t"+ "winS" +"\t"+ "winE" +"\t"+ "pi"+"\t"+ "theta" +"\t"+ "theta_pi";
+		writeFile(outPref + "_late_piTotal_windows.txt",out,append=F);
+		
+		out="gen"+"\t"+ "pop"+"\t"+ "indvID"+"\t"+ "age" +"\t"+ "SROH" +"\t"+ "NROH" +"\t"+ "FROH" +"\t"+ "ROHlen" +"\t"+ "ROHcoords" +"\t"+ "ROHcutoff" +"\t"+ "winS" +"\t"+ "winE";
+		writeFile(outPref + "_late_ROH.txt",out,append=F);
+		
+		out="gen"+"\t"+ "pop"+"\t"+ "indvID"+"\t"+ "age" +"\t"+ "rlzLoad" +"\t"+ "mskLoad" +"\t"+ "totalLoad" +"\t"+ "fitness" +"\t"+ "Het";
+		writeFile(outPref + "_late_IndvMetrics.txt",out,append=F);
+		
+		// Added: ROH & fitness for the same individuals (for per-individual regression) & for recruitment data being recorded
+		
+		out="gen\tpop\tindvID\tsex\tage\tSROH\tNROH\tFROH\tcachedFit\trecruited\thadOffspring\trecruitGen\tnBreed\tnOff\tROHlen\tROHcoords\tROHcutoff\twinS\twinE";
+		
+		writeFile(outPref + "_late_ROH_Fitness.txt", out, append=F);
+		
+		
+		// Added: one row per-individual genomics style output for comparison with empirical data
+		out="gen\tyear\tpop\tindvID\tsex\tage\tHet_indv\tSROH_500kb\tNROH_500kb\tFROH_500kb\tROHlen_500kb\tROHcoords_500kb\tcachedFit\trecruited\thadOffspring\trecruitGen\tnBreed\tnOff\tnHetDelSites_all\tnHomDelSites_all\tnTotalDelAlleles_all\tnHetDelSites_mod\tnHomDelSites_mod\tnTotalDelAlleles_mod\tnHetDelSites_strong\tnHomDelSites_strong\tnTotalDelAlleles_strong";
+		writeFile(outPref + "_late_IndvGenomeMetrics.txt", out, append=F);
+		
+		out="gen" + "\t" + "target" + "\t" + "K" + "\t"+ "pop" +"\t"+ "pop_tag" +"\t"+ "N" +"\t"+ "mType" +"\t"+ "mID" +"\t"+ "mPos" +"\t"+ "orgGen" +"\t"+ "orgPop" +"\t"+ "ScoefMut" +"\t"+ "DcoefMut";
+		writeFile(outPref + "_late_fixedMut.txt",out,append=F);
+		
+		out="gen" + "\t" + "target" + "\t" + "K" + "\t"+ "pop" +"\t"+ "pop_tag" +"\t"+ "N" +"\t"+ "mType" +"\t"+ "mID" +"\t"+ "mPos" +"\t"+ "orgGen" +"\t"+ "orgPop" +"\t"+ "ScoefMut" +"\t"+ "DcoefMut" + "\t" + "freqMut" + "\t" + "HomRef" + "\t" + "HomAlt" + "\t" + "Het";
+		writeFile(outPref + "_late_fullMut.txt",out,append=F);
+	
+	}
+	
+	if(burnRUN == 0)
+	{
+		// output recombination map used to be later used in pyslim for recapitation
+		writeFile(outPref+"_recRates.txt",asString(recomb_rates));
+		writeFile(outPref+"_recPos.txt",asString(recomb_ends));
+		writeFile(outPref+"_mut_ends.txt",asString(mut_ends));
+		writeFile(outPref+"_mut_rates.txt",asString(mut_rates));
+		writeFile(outPref+"_mut_features.txt",asString(mut_features));
+		writeFile(outPref+"_s_sample.txt",asString(s_sample));
+		writeFile(outPref+"_h_sample.txt",asString(h_sample));
+	}
+	
+	print("###############"+"\n");
+	print("output: "+outPref);
+	print("Burn");print(s0.start + "-" + s0.end);
+	print("End");print(s1.start + "-" + s1.end);
+	print("###############"+"\n");
+
+}
+
+
+/// burn in - outputs tree to be recapitated OR demographic change	
+s0 late() {
+	
+	if(burnRUN == 0)
+	{
+		sim.treeSeqOutput(outPref+"_init.tree");
+		sim.simulationFinished();
+	}
+	
+	if(burnRUN != 0)
+	{
+		// demo change of p0
+		if(sum(sim.cycle == Demo_g) > 0){
+			INDEX=which(sim.cycle == Demo_g);
+			newN=Demo_Ne[INDEX];
+			currentFactor=p0.tag/p0.getValue("targetN");
+			newN_factor=asInteger(newN*currentFactor);
+			//			if(sum(sim.cycle==HSG)>0 & newN_factor<4){newN_factor=4;}
+			print("### DEMO change p0 N="+p0.individualCount+" - gen=" + sim.cycle + " - newN=" + newN + " - newN_factor="+newN_factor);
+			p0.tag=newN_factor;
+			p0.setValue("targetN",newN);
+		}
+		// start p1 founding of east population
+		if(scenario != 1 & sim.cycle == east_fnd_gen){
+			POP=1;
+			sim.addSubpop("p"+POP,0);
+			print(" init pop: " + sim.subpopulations[POP].id + "=" + asInteger(east_fnd_N*currentFactor) + " - count="+sim.subpopulations[POP].individualCount);
+			print("p0 N="+p0.individualCount);
+			print("sample migrants="+east_fnd_N);
+			migrants=p0.sampleIndividuals(east_fnd_N);
+			if(mating == 1){migrants.tagF=1.0;migrants.tag=0;}
+			print("N migrants="+length(migrants));
+			p1.takeMigrants(migrants);
+			print(" init pop: " + sim.subpopulations[POP].id + "=" + asInteger(east_fnd_N*currentFactor) + " - count="+sim.subpopulations[POP].individualCount);
+			sim.subpopulations[POP].tag=asInteger(east_fnd_N*currentFactor);
+			sim.subpopulations[POP].setValue("targetN",asInteger(east_fnd_N*currentFactor));
+			print(" init pop: " + sim.subpopulations[POP].id + "=" + asInteger(east_fnd_N*currentFactor) + " - count="+sim.subpopulations[POP].individualCount);
+		}
+		// demo change of p1	
+		if(scenario != 1 & sim.cycle > east_fnd_gen & sum(sim.cycle == Demo_g) > 0){
+			INDEX=which(sim.cycle == Demo_g);
+			print("p1 newN index="+INDEX);
+			newN=Demo_Ne_east[INDEX];
+			print("p1 newN="+newN);
+			currentFactor=p1.tag/p1.getValue("targetN");
+			print("p1 currentFactor="+currentFactor);
+			newN_factor=asInteger(newN*currentFactor);
+			print("p1 newN_factor="+newN_factor);
+			print("### DEMO change p1 N="+p1.individualCount+" - gen=" + sim.cycle + " - newN=" + newN + " - newN_factor="+newN_factor);
+			p1.tag=newN_factor;
+			p1.setValue("targetN",newN);
+		}
+	
+	
+	}
+	
+	if(burnRUN == 1 & sim.cycle == s0.start)
+	{
+		// print Ne/Nc ratio
+		Ne_pop=c();
+		for(pop in sim.subpopulations)
+		{
+			PI_out=getNeutHet(pop,m1);
+			PI_out=strsplit(PI_out,"\t");
+			PI_out=asFloat(PI_out[length(PI_out)-1]);
+			NeX=PI_out / (4 * mean(mut_rates));
+			Ne_pop=c(Ne_pop,NeX);
+		}
+		defineConstant("Ne",Ne_pop);
+	}
+}
+
+// end output ending line, estimate Ne/Nc ratio and compress output files
+s1 late() {
+	
+	if(burnRUN == 1 | burnRUN == 3){
+		
+		if(runType == 1 | runType ==3){
+			out=sim.cycle + "\t" + "finsihed";
+			writeFile(outPref + "_late_piNeutral.txt",out,append=T);
+			out=sim.cycle + "\t" + "finsihed";
+			writeFile(outPref + "_late_piTotal.txt",out,append=T);
+		}
+		if(runType == 2 | runType ==3){
+			out=sim.cycle + "\t" + "finsihed";
+			writeFile(outPref + "_late_loadSummary.txt",out,append=T);
+		}
+		print("Na="+Na);
+		print("Ne="+Ne);
+		print("Ne ratio="+Ne/Na);
+	}
+	CMD=paste("gzip " + outPref+"*");
+	system(CMD);
+	sim.simulationFinished();
+}
+
+// reproduction
+//reproduction age restrictions + litter size - monogamous mating
+reproduction()
+{
+	// nonWF turn into WF
+	if(burnRUN == 3)
+	{
+		for(pop in sim.subpopulations)
+		{
+			
+			for (i in seqLen(pop.tag))
+			{
+				firstParent = pop.sampleIndividuals(1);
+				secondParent = pop.sampleIndividuals(1);
+				pop.addCrossed(firstParent, secondParent);
+			}
+		}
+		self.active = 0;
+	}
+	
+	// full nonWF
+	if(burnRUN != 3)
+	{
+		
+		// scenario 0 = baseline (historical + ongoing conservation)
+		if(scenario == 0){
+			if(sim.cycle <= stage_1){p_breed_0=0.8;p_breed_1=0.8;}
+			if(sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]){p_breed_0=runif(1, 0.7, 0.8);p_breed_1=runif(1, 0.7, 0.8);}
+			if(sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]){p_breed_0=runif(1, 0.5, 0.7);p_breed_1=runif(1, 0.5, 0.7);}
+			if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+			if(sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]){p_breed_0=0.75;p_breed_1=0.75;}
+			if(sim.cycle > stage_6[0] & sim.cycle <= stage_6[1]){p_breed_0=runif(1, 0.5, 0.7);p_breed_1=runif(1, 0.5, 0.7);}
+			if(sim.cycle >= stage_7[0]){p_breed_0=runif(1, 0.5, 0.7);p_breed_1=runif(1, 0.5, 0.7);}
+		
+		}
+		// scenario 1 = no conservation ever (post-crash conditions persist) “no conservation” counterfactual.
+		if(scenario == 1){
+			if(sim.cycle <= stage_1){p_breed_0=0.8;p_breed_1=0.8;}
+			if(sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]){p_breed_0=runif(1, 0.7, 0.8);p_breed_1=runif(1, 0.7, 0.8);}
+			if(sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]){p_breed_0=runif(1, 0.5, 0.7);p_breed_1=runif(1, 0.5, 0.7);}
+			if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+			if(sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+			if(sim.cycle > stage_6[0] & sim.cycle <= stage_6[1]){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+			if(sim.cycle >= stage_7){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+		}
+		
+		// scenario 2 = conservation stops after 2025
+		if (scenario == 2)
+		{
+			// baseline breeding (same as scenario 0) up to the stop year
+			if (sim.cycle <= stage_1) { p_breed_0=0.8; p_breed_1=0.8; }
+			if (sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]) { p_breed_0=runif(1,0.7,0.8); p_breed_1=runif(1,0.7,0.8); }
+			if (sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]) { p_breed_0=runif(1,0.5,0.7); p_breed_1=runif(1,0.5,0.7); }
+			if (sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]) { p_breed_0=runif(1,0.1,0.2); p_breed_1=runif(1,0.1,0.2); }
+			if (sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]) { p_breed_0=0.75; p_breed_1=0.75; }
+			
+			// supportive management until stop year
+			if (sim.cycle > stage_6[0] & sim.cycle < stopMgmtGen) { p_breed_0=runif(1,0.5,0.7); p_breed_1=runif(1,0.5,0.7); }
+			
+			// after 2025 no management breeding
+			if (sim.cycle >= stopMgmtGen) {
+				p_breed_0 = runif(1, 0.3, 0.4);   // West
+				p_breed_1 = runif(1, 0.3, 0.4);   // East
+			}
+		}
+		
+		//		// scenario 3 = conservation stops in the future after stage 6 - mortality_scale = 1.1 and West: p_breed = 0.5 / East: p_breed = 0.65 
+		//		if(scenario == 3){
+		//			if(sim.cycle <= stage_1){p_breed_0=0.8;p_breed_1=0.8;}
+		//			if(sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]){p_breed_0=runif(1, 0.7, 0.8);p_breed_1=runif(1, 0.7, 0.8);}
+		//			if(sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]){p_breed_0=runif(1, 0.5, 0.7);p_breed_1=runif(1, 0.5, 0.7);}
+		//			if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){p_breed_0=runif(1, 0.1, 0.2);p_breed_1=runif(1, 0.1, 0.2);}
+		//			if(sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]){p_breed_0=0.9*0.4;p_breed_1=0.95*0.4;} // 40% less breeding
+		//			if(sim.cycle > stage_6[0] & sim.cycle <= stage_6[1]){p_breed_0=0.45;p_breed_1=0.45;}
+		//			if(sim.cycle >= stage_7){p_breed_0=0.45;p_breed_1=0.45;}
+		//		}
+		
+		if(mating == 0)
+		{
+			// reproduction wild pop
+			for(pop in sim.subpopulations)
+			{
+				if(pop == p0){p_breed=p_breed_0;}else{p_breed=p_breed_1;}
+				parents=pop.individuals[pop.individuals.age>=rep1st & pop.individuals.age<=repLast];
+				//				if(sum(sim.cycle==HSG)>0){parents=pop.individuals;}
+				parents = sample(parents, length(parents));
+				// draw monogamous pairs and generate litters
+				if(length(parents)>=4){
+					for (i in seq(0, length(parents) - 2, by=2))
+					{
+						parent1 = parents[i];
+						parent2 = parents[i + 1];
+						//form crosses
+						breed = rbinom(1, 1, p_breed);
+						
+						if (breed == 0) {
+							eggs = 0;
+						} else {
+							lambda = rgamma(1, mu_cond, k_shape);
+							eggs   = rpois(1, lambda);
+							if(eggs >5){eggs=5;}
+						}
+						//						if(sum(sim.cycle==HSG)>0){print("HSG");eggs=4;}
+						if(eggs==0){next;}
+						for (j in 1:eggs)
+						{
+							pop.addCrossed(parent1, parent2);
+						}
+					}
+				}
+				// disable this callback for this generation
+				self.active = 0;
+			}
+		}
+		
+		if(mating == 1)
+		{
+			// ADDED code for captive releases once per generation
+			
+			// Checking if releases happen in this gen 
+			if ((scenario == 0 | scenario == 2) & sum(sim.cycle == rel_gens) > 0)
+			{
+				// If there are releases to happen this gen then the below code will find the matching number for that gen and release that number 
+				idxs = which(sim.cycle == rel_gens);
+				for (k in idxs)
+				{
+					// the calender year of release
+					yr = rel_years[k];
+					
+					// how many juveniles to release into west
+					nW = rel_westN[k];
+					
+					// how many juveniles to release into east 
+					nE = rel_eastN[k];
+					
+					// West release
+					
+					if (nW > 0)
+					{
+						// saves pop size before releasing
+						beforeN = p0.individualCount;
+						// Adds Nw indvs - parents are sampled from nW to generate teh juveniles to be released
+						addCaptiveJuveniles(p0, p0, nW);
+						// saves a record of the pop sze  after the release
+						afterN  = p0.individualCount;
+						
+						// Adding a log line to the release output file with info on how many were released in what gen/yr and to which population 
+						line = sim.cycle + "\t" + yr + "\t" + p0.id + "\t" + nW + "\t" + "captive_release_W";
+						writeFile(outPref + "_late_releases.txt", line, append=T);
+					}
+					
+					// East release 
+					
+					// Check if any birds should bre released into east this year 
+					if (nE > 0)
+					{
+						// Check the east (p1) actually exists 
+						if (sum(sim.subpopulations.id == 1) > 0)
+						{
+							// save east pop size before release 
+							beforeN = p1.individualCount;
+							
+							// Add correct number of indvs into east pop - make juveniles from parents sampled from the West pop
+							addCaptiveJuveniles(p1, p0, nE);
+							
+							// save pop size after releases
+							afterN  = p1.individualCount;
+							
+							// add information to output txt file 
+							line = sim.cycle + "\t" + yr + "\t" + p1.id + "\t" + nE + "\t" + "captive_release_E";
+							writeFile(outPref + "_late_releases.txt", line, append=T);
+						}
+						else
+							// if skipped because there is no p1 pop then write that it was skipped in output
+						{
+							line = sim.cycle + "\t" + yr + "\t" + 1 + "\t" + nE + "\t" + "captive_release_E_SKIPPED_no_p1";
+							writeFile(outPref + "_late_releases.txt", line, append=T);
+						}
+					}
+				}
+			}
+			
+			for(pop in sim.subpopulations)
+			{
+				if(pop == p0){p_breed=p_breed_0;}else{p_breed=p_breed_1;}
+				
+				// first reproductive event (sex-specific)
+				////
+				if (sim.cycle == (initGen + 1))
+				{
+					// eligible not-yet-paired individuals (tagF==1.0)
+					fem = pop.individuals[pop.individuals.sex == "F" &
+						pop.individuals.age >= rep1st & pop.individuals.age <= repLast &
+						pop.individuals.tagF == 1.0];
+					mal = pop.individuals[pop.individuals.sex == "M" &
+						pop.individuals.age >= rep1st & pop.individuals.age <= repLast &
+						pop.individuals.tagF == 1.0];
+					
+					fem = sample(fem, fem.size());
+					mal = sample(mal, mal.size());
+					
+					nPairs = min(fem.size(), mal.size());
+					if (nPairs >= 1)
+					{
+						for (i in 0:(nPairs-1))
+						{
+							parentF = fem[i];
+							parentM = mal[i];
+							
+							TAG = nextPairID;
+							nextPairID = nextPairID + 1;
+							
+							parentF.tagF = 2.0; parentF.tag = TAG;
+							parentM.tagF = 2.0; parentM.tag = TAG;
+							
+							// breeding outcome
+							breed = rbinom(1, 1, p_breed);
+							if (breed == 0) {
+								eggs = 0;
+							} else {
+								lambda = rgamma(1, mu_cond, k_shape);
+								eggs   = rpois(1, lambda);
+								if (eggs > 5) eggs = 5;
+							}
+							
+							// recruited = entered breeding population (became a breeder this season)
+							markRecruited(parentF);
+							markRecruited(parentM);
+							
+							// breeding outcome
+							if (eggs == 0)
+								next;
+							
+							for (j in 1:eggs)
+							{
+								pup = pop.addCrossed(parentF, parentM);
+								addOffspringCount(parentF);
+								addOffspringCount(parentM);
+								initRecruitTrack(pup);
+								pup.tag  = 0;
+								pup.tagF = 1.0;
+							}
+						}
+					}
+				}
+				
+				///// Monogamous pairs
+				// Monogamous pairs (sex-specific and recruited only if eggs>0)
+				if (sim.cycle > (initGen + 1))
+				{
+					parents = pop.individuals[pop.individuals.tagF == 2.0];
+					PAIRS = unique(parents.tag);
+					
+					for (index in PAIRS)
+					{
+						PARENTS = parents[parents.tag == index];
+						
+						if (length(PARENTS) == 2)
+						{
+							// enforce one female + one male snd otherwise dissolve pair
+							if (!((PARENTS[0].sex == "F" & PARENTS[1].sex == "M") |
+								(PARENTS[0].sex == "M" & PARENTS[1].sex == "F")))
+							{
+								PARENTS.tagF = 1.0;
+								PARENTS.tag  = 0;
+								next;
+							}
+							
+							parentF = (PARENTS[0].sex == "F") ? PARENTS[0] else PARENTS[1];
+							parentM = (PARENTS[0].sex == "M") ? PARENTS[0] else PARENTS[1];
+							
+							// breeding outcome
+							breed = rbinom(1, 1, p_breed);
+							if (breed == 0) {
+								eggs = 0;
+							} else {
+								lambda = rgamma(1, mu_cond, k_shape);
+								eggs   = rpois(1, lambda);
+								if (eggs > 5) eggs = 5;
+							}
+							// recruited = entered breeding population (became a breeder this season)
+							markRecruited(parentF);
+							markRecruited(parentM);
+							
+							// breeding outcome
+							if (eggs == 0)
+								next;
+							
+							for (j in 1:eggs)
+							{
+								pup = pop.addCrossed(parentF, parentM);
+								addOffspringCount(parentF);
+								addOffspringCount(parentM);
+								initRecruitTrack(pup);
+								pup.tag  = 0;
+								pup.tagF = 1.0;
+							}
+						}
+						else
+						{
+							// broken pair -> reset
+							if (length(PARENTS) > 0)
+							{
+								PARENTS.tagF = 1.0;
+								PARENTS.tag  = 0;
+							}
+						}
+					}
+				}
+				///// New reproductive individuals
+				
+				if (sim.cycle > (initGen + 1))
+				{
+					fem = pop.individuals[pop.individuals.sex == "F" &
+						pop.individuals.age >= rep1st & pop.individuals.age <= repLast &
+						pop.individuals.tagF == 1.0];
+					mal = pop.individuals[pop.individuals.sex == "M" &
+						pop.individuals.age >= rep1st & pop.individuals.age <= repLast &
+						pop.individuals.tagF == 1.0];
+					
+					fem = sample(fem, fem.size());
+					mal = sample(mal, mal.size());
+					
+					nPairs = min(fem.size(), mal.size());
+					if (nPairs >= 1)
+					{
+						for (i in 0:(nPairs-1))
+						{
+							parentF = fem[i];
+							parentM = mal[i];
+							
+							TAG = nextPairID;
+							nextPairID = nextPairID + 1;
+							
+							parentF.tagF = 2.0; parentF.tag = TAG;
+							parentM.tagF = 2.0; parentM.tag = TAG;
+							
+							// breeding outcome
+							breed = rbinom(1, 1, p_breed);
+							if (breed == 0) {
+								eggs = 0;
+							} else {
+								lambda = rgamma(1, mu_cond, k_shape);
+								eggs   = rpois(1, lambda);
+								if (eggs > 5) eggs = 5;
+							}
+							
+							// recruited = entered breeding population (became a breeder this season)
+							markRecruited(parentF);
+							markRecruited(parentM);
+							
+							// breeding outcome
+							if (eggs == 0)
+								next;
+							
+							for (j in 1:eggs)
+							{
+								pup = pop.addCrossed(parentF, parentM);
+								addOffspringCount(parentF);
+								addOffspringCount(parentM);
+								initRecruitTrack(pup);
+								pup.tag  = 0;
+								pup.tagF = 1.0;
+							}
+						}
+					}
+				}
+				// disable this callback for this generation
+				self.active = 0;
+			
+			}
+		}
+	
+	}
+
+}
+
+// fitness
+early() {
+	
+	// nonWF turn into WF
+	if(burnRUN == 3)
+	{
+		inds = sim.subpopulations.individuals;
+		inds[inds.age > 0].fitnessScaling = 0.0;
+	}
+	
+	// full nonWF
+	if(burnRUN != 3)
+	{
+		
+		for(pop in sim.subpopulations)
+		{
+			// scenario 0 = baseline (historical + ongoing conservation)
+			if(scenario == 0){
+				if(sim.cycle <= stage_1){mort=prob_mort_base;mort[length(mort)-1]=1.0;}
+				if(sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]){mort=prob_mort_base*runif(1, 1.0, 1.1);mort[length(mort)-1]=1.0;}
+				if(sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]){mort=prob_mort_base*runif(1, 1.1, 1.2);mort[length(mort)-1]=1.0;}
+				if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){
+					mort = prob_mort_base * runif(1, 1.68, 1.80);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]){
+					mort = prob_mort_base * runif(1, 0.4, 0.5);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_6[0] & sim.cycle <= stage_6[1]){mort=prob_mort_base*runif(1, 0.75, 0.8);mort[length(mort)-1]=1.0;}
+				if(sim.cycle >= stage_7){mort=prob_mort_base*runif(1, 0.75, 0.8);mort[length(mort)-1]=1.0;}
+			}
+			if(scenario == 1){
+				if(sim.cycle <= stage_1){
+					mort = prob_mort_base;
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]){
+					mort = prob_mort_base * runif(1, 1.00, 1.10);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]){
+					mort = prob_mort_base * runif(1, 1.10, 1.20);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){
+					mort = prob_mort_base * runif(1, 1.68, 1.80);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]){
+					mort = prob_mort_base * runif(1, 1.40, 1.50);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle > stage_6[0] & sim.cycle <= stage_6[1]){
+					mort = prob_mort_base * runif(1, 1.40, 1.50);
+					mort[length(mort)-1] = 1.0;
+				}
+				if(sim.cycle >= stage_7[0]){
+					mort = prob_mort_base * runif(1, 1.40, 1.50);
+					mort[length(mort)-1] = 1.0;
+				}
+			}
+			// scenario 2 = conservation stops after intensive phase 
+			
+			if (scenario == 2) {
+				if (sim.cycle <= stage_1) { mort=prob_mort_base; mort[length(mort)-1]=1.0; }
+				if (sim.cycle > stage_2[0] & sim.cycle <= stage_2[1]) { mort=prob_mort_base*runif(1,1.0,1.1); mort[length(mort)-1]=1.0; }
+				if (sim.cycle > stage_3[0] & sim.cycle <= stage_3[1]) { mort=prob_mort_base*runif(1,1.1,1.2); mort[length(mort)-1]=1.0; }
+				if(sim.cycle > stage_4[0] & sim.cycle <= stage_4[1]){
+					mort = prob_mort_base * runif(1, 1.68, 1.80);
+					mort[length(mort)-1] = 1.0;
+				}
+				if (sim.cycle > stage_5[0] & sim.cycle <= stage_5[1]) {
+					mort = prob_mort_base * runif(1, 0.4, 0.5);
+					mort[length(mort)-1] = 1.0;
+				}
+				// supportive mgmt until stop year
+				if (sim.cycle > stage_6[0] & sim.cycle < stopMgmtGen) { mort=prob_mort_base*runif(1,0.75,0.8); mort[length(mort)-1]=1.0; }
+				
+				// After 2025 there is no management 
+				if (sim.cycle >= stopMgmtGen) { mort=prob_mort_base*runif(1,1.1,1.2); mort[length(mort)-1]=1.0; }
+			}
+			
+			inds = pop.individuals;
+			popCount=pop.individualCount;
+			if(popCount==0){next;}
+			ages = inds.age;
+			mortality = mort[ages];
+			survival = 1 - mortality;
+			//			RNDkill=1; // if needed add random kills from ecological stochasticity 
+			//			inds.fitnessScaling = survival*RNDkill;
+			survival[survival<0]=0;
+			inds.fitnessScaling = survival;
+			
+			// density-dependence, factoring in individual mortality
+			popCount=pop.individualCount;
+			if(!isNULL(popCount) & !isNULL(survival)){
+				//			print("pop:"+pop.id+" - N:"+popCount + " - survival:"+mean(survival));
+				FITscal=pmin((pop.tag / (popCount * mean(survival))),1.0);
+				if(FITscal<0){FITscal=0;}
+				pop.fitnessScaling = FITscal;
+			}
+			
+			if(sim.cycle == GenBtl & btl > 0 & pop.individualCount > btl){
+				print("COLLAPSE");
+				catn("PROGRESS - late  pop:"+pop.id+" - "+date() + "\t" + time() + "\t" + "generation: " + sim.cycle + "\t" + "N: " + pop.individualCount + "\t" + "targetN: " + pop.getValue("targetN") + "\t" + "currentK: " + pop.tag + "  memory usage: "+usage()/1000+"Gb" + "\r");
+				all_indv = pop.individuals;
+				
+				// Edits what individuals are left in the bottleneck so very old or out of breeding age individuals are not the ones kept as the model would then be very likely to go extinct 
+				// prefer ages 1-6 if there are enough otherwise sample from everyone
+				if (pop.individualCount > btl)
+				{
+					
+					// Prefer breeding-age individuals and enforce a viable sex-balanced founder set
+					// For btl=4, this tries to keep 2 females and 2 males
+					// If that is impossible, it falls back to any sex-balanced set
+					// If that is still impossible, it samples any 4 but prints a warning
+					
+					cands = all_indv[all_indv.age >= rep1st & all_indv.age <= 6];
+					
+					fem = cands[cands.sex == "F"];
+					mal = cands[cands.sex == "M"];
+					
+					nF = asInteger(btl / 2);
+					nM = btl - nF;
+					
+					if (fem.size() >= nF & mal.size() >= nM)
+					{
+						sel_indv = c(sample(fem, nF, replace=F), sample(mal, nM, replace=F));
+					}
+					else
+					{
+						fem_all = all_indv[all_indv.sex == "F"];
+						mal_all = all_indv[all_indv.sex == "M"];
+						
+						if (fem_all.size() >= nF & mal_all.size() >= nM)
+						{
+							print("WARN: bottleneck used sex balanced founders outside preferred age range");
+							sel_indv = c(sample(fem_all, nF, replace=F), sample(mal_all, nM, replace=F));
+						}
+						else
+						{
+							print("WARN: could not enforce sex-balanced bottleneck founders");
+							sel_indv = pop.sampleIndividuals(btl);
+						}
+					}
+					
+					// Reset pair status after bottleneck so survivors can form new pairs.
+					sel_indv.tagF = 1.0;
+					sel_indv.tag  = 0;
+					
+					// Give selected bottleneck founders maximal individual survival in the bottleneck tick.
+					sel_indv.fitnessScaling = 1.0;
+					
+					rest = setDifference(all_indv, sel_indv);
+					rest.fitnessScaling = 0.0;
+				}
+			
+			}
+		
+		}
+	}
+}
+
+// OUTPUTS
+late() {
+	if (prepRun != 1)
+	{
+		
+		if (((burnRUN != 0) & (sim.cycle == (initGen + 100))) |
+			((burnRUN == 1 | burnRUN == 3 | burnRUN == 4) & sim.cycle == asInteger(s0.start / 4)) |
+			((burnRUN == 1 | burnRUN == 2 | burnRUN == 3 | burnRUN == 4) &
+			((sim.cycle == s0.start) | (sim.cycle > (s0.start - 4) & sim.cycle < s1.end & sim.cycle % 2 == 0))) |
+			((burnRUN == 2) & sim.cycle > initGen & sim.cycle < s0.start & sim.cycle % 200 == 0))
+		{
+			print("####   OUTPUT  -  generation=" + sim.cycle);
+			
+			coords = readFile(coord_file_in);
+			coords = asInteger(strsplit(coords[length(coords) - 1], "\t")[4]);
+			
+			for (pop in sim.subpopulations)
+			{
+				if (pop.individualCount < 1)
+					next;
+				
+				print(sim.cycle + " pop:" + pop.id);
+				
+				if (runType == 1 | runType == 3 | runType == 4)
+				{
+					out = getNeutHet(pop, m1);
+					writeFile(outPref + "_late_piNeutral.txt", out, append=T);
+				}
+				
+				if (runType == 2 | runType == 3 | runType == 4)
+				{
+					out = getPopSumm(pop);
+					writeFile(outPref + "_late_loadSummary.txt", out, append=T);
+				}
+				
+				if (runType == 1 | runType == 3 | runType == 4)
+				{
+					wins = seq(0, coords, by=500e3);
+					for (win in 1:(length(wins) - 1))
+					{
+						out = subpopHeterozygosityWindow(pop, wins[win - 1], wins[win], m1, 100);
+						writeFile(outPref + "_late_piNeutral_windows.txt", out, append=T);
+						
+						out = subpopHeterozygosityWindow_all(pop, wins[win - 1], wins[win], 100);
+						writeFile(outPref + "_late_piTotal_windows.txt", out, append=T);
+					}
+					
+					IndvMetrics = pop.sampleIndividuals(20, minAge=1);
+					out = getIndvMetrics(IndvMetrics, coords);
+					writeFile(outPref + "_late_IndvMetrics.txt", out, append=T);
+				}
+				
+				if (ROHest == 1 &
+					(sim.cycle == asInteger(s0.start / 2) |
+					(sim.cycle > (s0.start - 4) & sim.cycle < (s1.start + 100) & sim.cycle % 10 == 0) |
+					(sim.cycle > (s0.start + 100) & sim.cycle % 50 == 0)))
+				{
+					// One sample of individuals used for both FROH and fitness
+					indvROH = pop.sampleIndividuals(40, minAge=rep1st);
+					
+					out = getROH_Fitness(pop, indvROH, 500e3, 0, coords);
+					writeFile(outPref + "_late_ROH_Fitness.txt", out, append=T);
+					
+					out = getROH(pop, indvROH, 500e3, 0, coords);
+					writeFile(outPref + "_late_ROH.txt", out, append=T);
+					
+					out = fixedMutations(pop);
+					writeFile(outPref + "_late_fixedMut.txt", out, append=T);
+				}
+			}
+		}
+		
+		
+		// Updated: yearly individual genomics-style output from 1825 onward
+		
+		yr_now = asInteger(minYear + (sim.cycle - g_T_demo));
+		
+		if (yr_now >= 1825)
+		{
+			coords_now = readFile(coord_file_in);
+			coords_now = asInteger(strsplit(coords_now[length(coords_now) - 1], "\t")[4]);
+			
+			for (pop in sim.subpopulations)
+			{
+				if (pop.individualCount < 1)
+					next;
+				
+				adultsGenome = pop.individuals[pop.individuals.age >= rep1st];
+				
+				if (length(adultsGenome) > 0)
+				{
+					nSampGenome = min(20, length(adultsGenome));
+					indvGenome = sample(adultsGenome, nSampGenome, replace=F);
+					
+					out = getIndvGenomeMetrics(pop, indvGenome, 500e3, 0, coords_now, coords_now);
+					writeFile(outPref + "_late_IndvGenomeMetrics.txt", out, append=T);
+				}
+			}
+		}
+		
+		
+		// DFE snapshot output independent of normal OUTPUT schedule
+		
+		yr = asInteger(minYear + (sim.cycle - g_T_demo));
+		
+		if (any(DFE_YEARS == yr))
+		{
+			for (pop in sim.subpopulations)
+			{
+				if (pop.individualCount < 1)
+					next;
+				
+				out = getMutSum(pop, 1);
+				writeFile(outPref + "_late_fullMut.txt", out, append=T);
+			}
+		}
+		
+		
+		// Extinction check
+		// Extinction is defined as loss of all individuals across the simulated metapopulation,
+		// not loss of the west population alone.
+		
+		totalN = sum(sim.subpopulations.individualCount);
+		
+		if (totalN < 1)
+		{
+			print("EXTINCTION!!!!");
+			
+			if (runType == 1 | runType == 3 | runType == 4)
+			{
+				out = sim.cycle + "\t" + "extinct";
+				writeFile(outPref + "_late_piNeutral.txt", out, append=T);
+				
+				out = sim.cycle + "\t" + "extinct";
+				writeFile(outPref + "_late_piTotal.txt", out, append=T);
+			}
+			
+			if (runType == 2 | runType == 3 | runType == 4)
+			{
+				out = sim.cycle + "\t" + "extinct";
+				writeFile(outPref + "_late_loadSummary.txt", out, append=T);
+			}
+			
+			CMD = paste("gzip " + outPref + "*");
+			system(CMD);
+			sim.simulationFinished();
+		}
+	}
+}
+
+////regulate K
+2: late()
+{
+	for(pop in sim.subpopulations)
+	{
+		N=pop.individualCount;
+		target = max(1, pop.getValue("targetN"));
+		currSize = N / target;
+		currK=pop.tag;
+		if(currSize<0.9)
+		{
+			newN=pop.tag+pop.tag*0.05;
+			if(newN<(target*Ktarget)){print("K up");pop.tag=asInteger(newN);}else{print("K correction too high - New N="+newN+ " - higher than:"+(target*Ktarget));}
+		}
+		if(currSize>1.2){
+			print("K down");
+			newN=pop.tag-pop.tag*0.1;
+			if(newN<0){newN=pop.tag;}
+			pop.tag=asInteger(newN);
+		}
+		
+		if (pop.tag < minK)
+		{pop.tag=minK;pop.setValue("targetN",minK);}
+	
+	}
+
+}
+
+/// Print progress
+2: late() {
+	if(sim.cycle == 1 | sim.cycle % 100 ==0){
+		for(pop in sim.subpopulations)
+		{
+			catn("PROGRESS - late  pop:"+pop.id+" - "+date() + "\t" + time() + "\t" + "generation: " + sim.cycle + "\t" + "N: " + pop.individualCount + "\t" + "targetN: " + pop.getValue("targetN") + "\t" + "currentK: " + pop.tag + "  memory usage: "+usage()/1000+"Gb" + "\r");
+		}
+	
+	}
+}
+
+
+1: late() {
+	if(prepRun ==1){
+		// this should happen *after* mortality (so, in late())
+		GENTIME[community.tick - 1] = mean(p0.individuals.meanParentAge);
+	}
+}
+
+100 late() {
+	if(prepRun == 1){
+		sim.treeSeqOutput(
+			outPref + "generation_time.trees",
+			metadata=Dictionary("generation_times", GENTIME)
+			);
+		catn("Done! Mean generation time " + mean(GENTIME[50:99]) + "SD=" + sd(GENTIME[50:99]));
+		system("rm "+ outPref + "generation_time.trees");
+		sim.simulationFinished();
+	}
+}
+
+// Added for adding captive inidividuals
+
+// Defining a function called addCaptiveJuveniles - targetPop (the pop individuals are being added into), sourcePop the population being used as parents to create the juveniles (West pop), nReleases ( how many juveniles to add this year) 
+
+function (void) addCaptiveJuveniles(o<Subpopulation>$ targetPop,
+	o<Subpopulation>$ sourcePop,
+	i$ nReleases)
+{
+	
+	// If the releases are 0 then don't do anything 
+	if (nReleases <= 0)
+		return;
+	
+	// Cannot have less than 2 individuals in source pop - if there are then captive release is skipped and a warning is printed 
+	if (sourcePop.individualCount < 2) {
+		print("WARN: captive releases skipped (sourcePop too small): pop " + sourcePop.id);
+		return;
+	}
+	
+	// Prefer adults as parents is there are any, else fall back to anyone being parents 
+	
+	// Creates a list of candidate parents form sourcePop - indv with age bestweesn rep1st and repLast - prefer adults
+	parentsPool = sourcePop.individuals[sourcePop.individuals.age >= rep1st & sourcePop.individuals.age <= repLast];
+	// If there aren't at least 2 breeding-age individuals then use any individual in the source pop 
+	if (parentsPool.size() < 2)
+		parentsPool = sourcePop.individuals;
+	// Check if still less than 2 candidates - print warning and exit 
+	if (parentsPool.size() < 2) {
+		print("WARN: captive releases skipped (not enough parents in pool): pop " + sourcePop.id);
+		return;
+	}
+	
+	// Loop nReleases times - once per juvenile to be released - randomly choose two distincr parents from parentspool - create offspring by crossing parents, replace =F so the same indv cannot be picked twice 
+	
+	for (i in seqLen(nReleases))
+	{
+		fem = parentsPool[parentsPool.sex == "F"];
+		mal = parentsPool[parentsPool.sex == "M"];
+		if (fem.size() < 1 | mal.size() < 1) {
+			print("WARN: captive releases skipped (need both sexes): pop " + sourcePop.id);
+			return;
+		}
+		prF = sample(fem, 1);
+		prM = sample(mal, 1);
+		pup = targetPop.addCrossed(prF, prM);
+		pup.age  = 0;
+		pup.tag  = 0;
+		pup.tagF = 1.0;
+		initRecruitTrack(pup);
+	}
+}
+
+//Functions
+
+function (s)getNeutHet (o pop, o mut) {
+	
+	total = 0.0;
+	
+	for (ind in pop.individuals)
+	{
+		// Calculate the nucleotide heterozygosity of this individual
+		muts0 = ind.haplosomes[0].mutationsOfType(mut);
+		muts1 = ind.haplosomes[1].mutationsOfType(mut);
+		
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / (sim.chromosome.lastPosition + 1);
+		total = total + pi_ind;
+	}
+	
+	size = pop.individuals.size();
+	pi = total / size;
+	
+	
+	//	mut=sim.mutations;
+	mut=sim.mutationsOfType(mut);
+	freqs=sim.mutationFrequencies(pop,mut);
+	mut=mut[freqs>0&freqs<1];
+	DEN=sum(1/seqAlong(mut)[1:(length(mut)-1)]);
+	theta=length(mut)/DEN;
+	pi_theta=theta/sim.chromosome.lastPosition;
+	
+	out = sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag + "\t" + pop.id + "\t" + pi + "\t" +size+ "\t" +theta+ "\t" +pi_theta;
+	return out;
+}
+
+function (s)getTotalHet (o pop) {
+	
+	total = 0.0;
+	
+	for (ind in pop.individuals)
+	{
+		// Calculate the nucleotide heterozygosity of this individual
+		muts0 = ind.haplosomes[0].mutations;
+		muts1 = ind.haplosomes[1].mutations;
+		
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / (sim.chromosome.lastPosition + 1);
+		total = total + pi_ind;
+	}
+	
+	size = pop.individuals.size();
+	pi = total / size;
+	
+	mut=sim.mutations;
+	//	mut=sim.mutationsOfType(m1);
+	freqs=sim.mutationFrequencies(pop,mut);
+	mut=mut[freqs>0&freqs<1];
+	DEN=sum(1/seqAlong(mut)[1:(length(mut)-1)]);
+	theta=length(mut)/DEN;
+	pi_theta=theta/sim.chromosome.lastPosition;
+	
+	out = sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag + "\t" + pop.id + "\t" + pi + "\t" +size+ "\t" +theta+ "\t" +pi_theta;
+	return out;
+}
+
+
+function (s) geths(o pop)
+{
+	i=pop.individuals;
+	indvCount=length(i);
+	m = i.uniqueMutations;
+	m_uniq = unique(m);
+	Mutcount=length(m_uniq);
+	freqMut=sim.mutationFrequencies(pop,m_uniq);
+	ScoefMut=abs(m_uniq.selectionCoeff);
+	DcoefMut=m_uniq.mutationType.dominanceCoeff;
+	out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t"+ freqMut+"\t"+ ScoefMut +"\t"+ DcoefMut;
+	return(out);
+}
+
+function (s) getPopSumm(o pop)
+{
+	mNeutral=sim.mutationTypes[sim.mutationTypes.id==mut_neutral];
+	i=pop.individuals;
+	indvCount=length(i);
+	m = sim.mutations;
+	m_uniq=m[m.mutationType!=mNeutral];
+	freqMut=sim.mutationFrequencies(pop,m_uniq);
+	Mutcount=sum(freqMut>0);
+	ScoefMut=abs(m_uniq.selectionCoeff);
+	DcoefMut=m_uniq.mutationType.dominanceCoeff;
+	//	HomRef=sapply(m_uniq, "sum(i.haplosomes[0].containsMutations(applyValue)==F&i.haplosomes[1].containsMutations(applyValue)==F)/i.size();");
+	//	HomAlt=sapply(m_uniq, "sum(i.haplosomes[0].containsMutations(applyValue)==T&i.haplosomes[1].containsMutations(applyValue)==T)/i.size();");
+	//	Het1=sapply(m_uniq, "sum(i.haplosomes[0].containsMutations(applyValue)==F&i.haplosomes[1].containsMutations(applyValue)==T)/i.size();");
+	//	Het2=sapply(m_uniq, "sum(i.haplosomes[0].containsMutations(applyValue)==T&i.haplosomes[1].containsMutations(applyValue)==F)/i.size();");
+	//	Het=(Het1+Het2);
+	//	mHet=mean(Het);
+	totalLoad=sum(freqMut*ScoefMut);
+	relzLoad=sum(freqMut^2*ScoefMut)+ (2*sum(freqMut*(1-freqMut)*ScoefMut*DcoefMut));
+	mskLoad=sum(freqMut*ScoefMut) - sum(freqMut^2*ScoefMut) - (2*sum(freqMut*(1-freqMut)*ScoefMut*DcoefMut));
+	
+	fitness_indv=c();
+	for(indv in pop.individuals){
+		// Calculate individual fitness
+		muts0_m2 = indv.haplosomes[0].mutations;
+		muts1_m2 = indv.haplosomes[1].mutations;
+		HOMO_m2=setIntersection(muts0_m2,muts1_m2);
+		HETERO_m2=setSymmetricDifference(muts0_m2,muts1_m2);
+		if(length(HETERO_m2)>0){fit_hetero=1-(abs(HETERO_m2.selectionCoeff)*HETERO_m2.mutationType.dominanceCoeff);}
+		if(length(HETERO_m2)==0){fit_hetero=1;}
+		fit_homo=1-abs(HOMO_m2.selectionCoeff);
+		if(length(fit_homo)==0){fit_homo=1;}
+		indv_fit=product(c(fit_hetero,fit_homo));
+		fitness_indv=c(fitness_indv,indv_fit);
+	}
+	
+	fitness_cached=pop.cachedFitness(pop.individuals.index);
+	
+	out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t"+ indvCount +"\t"+ Mutcount +"\t"+ "NA" +"\t"+ "NA" +"\t"+ totalLoad +"\t"+ relzLoad +"\t"+ mskLoad +"\t"+mean(fitness_indv)+"\t"+sd(fitness_indv)+"\t"+mean(fitness_cached)+"\t"+sd(fitness_cached);
+	return(out);
+}
+
+
+// Heterozygosity window
+function (f$)genomicHeterozygosityWindow(o<Haplosome>$ genome1, o<Haplosome>$ genome2 ,integer$ window1 , integer$ window2 , object$ mutType) ///Calc heterozig between 2 genomes only for a certain window
+{
+	muts1 = genome1.mutationsOfType(mutType);
+	muts1 = muts1[muts1.position>=window1 & muts1.position<=window2];
+	
+	muts2 = genome2.mutationsOfType(mutType);
+	muts2 = muts2[muts2.position>=window1 & muts2.position<=window2];
+	
+	unshared = setSymmetricDifference(muts1, muts2);
+	pi = size(unshared) / (window2-window1);
+	return pi;
+}
+
+function (s)subpopHeterozygosityWindow( o<Subpopulation>$ subpop, integer$ window1, integer$ window2, object$ mutType , [i$ sampleSize=100] ) ///Calc heteroz for a sample of inds from a pop BUT for a specific window
+{
+	if (sampleSize > subpop.individualCount)
+		sampledIndividuals = subpop.individuals;
+	else
+		sampledIndividuals = sample(subpop.individuals, sampleSize, replace=F);
+	
+	pi_total = 0;
+	for (individual in sampledIndividuals)
+	{
+		haplosomes = individual.haplosomes;
+		individual_pi = genomicHeterozygosityWindow(haplosomes[0], haplosomes[1], window1 , window2, mutType);
+		pi_total = pi_total + individual_pi;
+	}
+	
+	//	mut=sim.mutations;
+	mut=sim.mutationsOfType(mutType);
+	freqs=sim.mutationFrequencies(subpop,mut);
+	pos=mut.position;
+	mut=mut[freqs>0&freqs<1&pos>=window1&pos<=window2];
+	if(length(mut)>1){DEN=sum(1/seqAlong(mut)[1:(length(mut)-1)]);}else{DEN=0;}
+	theta=length(mut)/DEN;
+	pi_theta=theta/(window2-window1);
+	
+	out= sim.cycle + "\t" + subpop.getValue("targetN") + "\t" + subpop.tag + "\t" + subpop.id + "\t" + subpop.individualCount + "\t" + sampledIndividuals.size() + "\t" + window1 + "\t" + window2 +"\t" + (pi_total / sampledIndividuals.size())+"\t" +theta  +"\t" + pi_theta;
+	return(out);
+}
+
+
+// Heterozygosity window
+function (f$)genomicHeterozygosityWindow_all(o<Haplosome>$ genome1, o<Haplosome>$ genome2 ,integer$ window1 , integer$ window2) ///Calc heterozig between 2 genomes only for a certain window
+{
+	muts1 = genome1.mutations;
+	muts1 = muts1[muts1.position>=window1 & muts1.position<=window2];
+	
+	muts2 = genome2.mutations;
+	muts2 = muts2[muts2.position>=window1 & muts2.position<=window2];
+	
+	unshared = setSymmetricDifference(muts1, muts2);
+	pi = size(unshared) / (window2-window1);
+	return pi;
+}
+
+function (s)subpopHeterozygosityWindow_all( o<Subpopulation>$ subpop, integer$ window1, integer$ window2, [i$ sampleSize=100] ) ///Calc heteroz for a sample of inds from a pop BUT for a specific window
+{
+	if (sampleSize > subpop.individualCount)
+		sampledIndividuals = subpop.individuals;
+	else
+		sampledIndividuals = sample(subpop.individuals, sampleSize, replace=F);
+	
+	pi_total = 0;
+	for (individual in sampledIndividuals)
+	{
+		haplosomes = individual.haplosomes;
+		individual_pi = genomicHeterozygosityWindow_all(haplosomes[0], haplosomes[1], window1 , window2);
+		pi_total = pi_total + individual_pi;
+	}
+	
+	//	mut=sim.mutations;
+	mut=sim.mutations;
+	freqs=sim.mutationFrequencies(subpop,mut);
+	pos=mut.position;
+	mut=mut[freqs>0&freqs<1&pos>=window1&pos<=window2];
+	if(length(mut)>1){DEN=sum(1/seqAlong(mut)[1:(length(mut)-1)]);}else{DEN=0;}
+	theta=length(mut)/DEN;
+	pi_theta=theta/(window2-window1);
+	
+	out= sim.cycle + "\t" + subpop.getValue("targetN") + "\t" + subpop.tag + "\t" + subpop.id + "\t" + subpop.individualCount + "\t" + sampledIndividuals.size() + "\t" + window1 + "\t" + window2 +"\t" + (pi_total / sampledIndividuals.size())+"\t" +theta  +"\t" + pi_theta;
+	return(out);
+}
+
+
+function (s) getIndvLoad(o pop, i sampSize)
+{
+	i2.evaluate(pop);
+	target=pop.sampleIndividuals(1);
+	pop_indv=i2.drawByStrength(target, sampSize);
+	out=c();
+	for(indv in pop_indv){
+		mut=indv.uniqueMutations;
+		if(length(mut)==0){next;}
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutOrgGen=mut.originGeneration;
+		mutOrgPop=mut.subpopID;
+		mutS=mut.selectionCoeff;
+		mutH=m_uniq.mutationType.dominanceCoeff;
+		mutFreq=sim.mutationFrequencies(pop,mut);
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		indv_out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t"+ index +"\t"+ age +"\t"+ relzLoad_f2 +"\t"+ mskLoad_f2 +"\t"+ totalLoad_f2 +"\t"+ pop.cachedFitness(indv.index);
+		
+		out=c(out,indv_out);
+	}
+	return(out);
+}
+
+function (i)readIntTable(s$ path)
+{
+	if (!fileExists(path))
+		stop("readIntTable(): File not found at path " + path);
+	l = readFile(path);
+	m = sapply(l, "asInteger(strsplit(applyValue));", simplify="matrix");
+	return t(m);
+}
+
+
+function (s) getMutSum(o pop, i mGenotype)
+{
+	// neutral type may not exist in some runTypes
+	mNeutral = NULL;
+	if (exists("mut_neutral"))
+		mNeutral = sim.mutationTypes[sim.mutationTypes.id == mut_neutral];
+	all_muts = sim.mutations;
+	freqMut  = sim.mutationFrequencies(pop, all_muts);
+	
+	ID       = all_muts.id;
+	TYPE     = all_muts.mutationType.id;
+	POS      = all_muts.position;
+	orgGen   = all_muts.originTick;
+	orgPop   = all_muts.subpopID;
+	ScoefMut = abs(all_muts.selectionCoeff);
+	DcoefMut = all_muts.mutationType.dominanceCoeff;
+	
+	nM = size(all_muts);
+	
+	if (mGenotype > 0)
+	{
+		inds = pop.individuals;
+		nI   = size(inds);
+		
+		// initialize counts
+		HomRef = rep(0.0, nM);
+		HomAlt = rep(0.0, nM);
+		Het    = rep(0.0, nM);
+		
+		// precompute mapping from mutations to indices in all_muts
+		// so we can index quickly
+		mutIndex = integer(nM);
+		for (iMut in seqLen(nM))
+			mutIndex[iMut] = iMut;  // identity mapping if all_muts has no duplicates
+		
+		// Loop over individuals (outer), mutations inside via uniqueMutations
+		for (ind in inds)
+		{
+			G1 = ind.haplosomes[0];
+			G2 = ind.haplosomes[1];
+			
+			// mutations present in this individual
+			m_ind = ind.uniqueMutations;
+			
+			if (!size(m_ind))
+			{
+				// no mutations at all => all sites HomRef for this individual
+				// we’ll account for them by adding 1 to HomRef for all mutations
+				// at the end; for now just skip
+				next;
+			}
+			
+			// Map these mutations to their indices in all_muts
+			idx = match(m_ind, all_muts);
+			// idx could contain -1 if all_muts and uniqueMutations differ, but
+			// in your setup they should be consistent.
+			
+			// presence on each genome
+			has1 = G1.containsMutations(m_ind);
+			has2 = G2.containsMutations(m_ind);
+			
+			// homozygous ALT
+			isHomAlt = has1 & has2;
+			if (sum(isHomAlt))
+				HomAlt[idx[isHomAlt]] = HomAlt[idx[isHomAlt]] + 1;
+			
+			// heterozygotes
+			isHet = (has1 & !has2) | (!has1 & has2);
+			if (sum(isHet))
+				Het[idx[isHet]] = Het[idx[isHet]] + 1;
+			
+			// HomRef we get later as: N - HomAlt - Het
+		}
+		
+		// individuals with no mutations at all are HomRef for all sites
+		// but since they were skipped entirely, that’s fine:
+		HomRef = nI - HomAlt - Het;
+		
+		// convert counts to proportions
+		HomRef = HomRef / nI;
+		HomAlt = HomAlt / nI;
+		Het    = Het    / nI;
+	}
+	else
+	{
+		HomRef = "NA";
+		HomAlt = "NA";
+		Het    = "NA";
+	}
+	
+	out = sim.cycle + "\t" +
+		pop.getValue("targetN") + "\t" +
+		pop.tag + "\t" + pop.id + "\t" +
+		pop.tag + "\t" + pop.individualCount + "\t" +
+		TYPE + "\t" + ID + "\t" + POS + "\t" +
+		orgGen + "\t" + orgPop + "\t" +
+		ScoefMut + "\t" + DcoefMut + "\t" +
+		freqMut + "\t" +
+		HomRef + "\t" + HomAlt + "\t" + Het;
+	
+	return out;
+}
+
+function (s) fixedMutations(o pop)
+{
+	mNeutral=sim.mutationTypes[sim.mutationTypes.id==mut_neutral];
+	all_muts=sim.mutations;
+	non_neutral=all_muts[all_muts.mutationType!=mNeutral];
+	fixed=non_neutral[sim.mutationFrequencies(pop,non_neutral)==1.0];
+	if(length(fixed)>0)
+	{
+		ID=fixed.id;
+		TYPE=fixed.mutationType.id;
+		POS=fixed.position;
+		orgGen=fixed.originTick;
+		orgPop=fixed.subpopID;
+		ScoefMut=abs(fixed.selectionCoeff);
+		DcoefMut=fixed.mutationType.dominanceCoeff;
+		out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t"+ pop.tag +"\t"+ pop.individualCount +"\t"+ TYPE +"\t"+ ID +"\t"+ POS +"\t"+ orgGen +"\t"+ orgPop +"\t"+ ScoefMut +"\t"+ DcoefMut;
+	} else {out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t"+ pop.tag +"\t"+ pop.individualCount + "\t" + "NA" + "\t" + "NA" + "\t" + "NA" + "\t" + "NA" + "\t" + "NA" + "\t" + "NA" + "\t" + "NA";}
+	return(out);
+}
+
+
+function (s) getIndvSummary(o pop, o individuals)
+{
+	mNeutral=sim.mutationTypes[sim.mutationTypes.id==mut_neutral];
+	out=c();
+	for(indv in individuals){
+		mut_all=indv.uniqueMutations;
+		mut=mut_all[mut_all.mutationType!=mNeutral];
+		if(length(mut)==0){next;}
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutOrgGen=mut.originGeneration;
+		mutOrgPop=mut.subpopID;
+		mutS=mut.selectionCoeff;
+		mutH=mut.mutationType.dominanceCoeff;
+		mutFreq=sim.mutationFrequencies(pop,mut);
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		// Calculate the neutral nucleotide heterozygosity of this individual
+		muts0 = indv.haplosomes[0].mutationsOfType(mNeutral);
+		muts1 = indv.haplosomes[1].mutationsOfType(mNeutral);
+		
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / (sim.chromosome.lastPosition + 1);
+		
+		indv_out=sim.cycle + "\t" + pop.getValue("targetN") + "\t" + pop.tag +"\t"+ pop.id +"\t" + index +"\t"+ age +"\t"+indv.pedigreeID+"\t"+paste(indv.pedigreeParentIDs,sep="_")+"\t"+paste(indv.pedigreeGrandparentIDs,sep="_") +"\t"+ relzLoad_f2 +"\t"+ mskLoad_f2 +"\t"+ totalLoad_f2 +"\t"+ pop.cachedFitness(indv.index) +"\t"+ pi_ind;
+		
+		out=c(out,indv_out);
+	}
+	return(out);
+}
+
+
+// Heterozygosity count window
+function (i$)HeteroCountWindow(o<Haplosome>$ genome1, o<Haplosome>$ genome2 ,integer$ window1 , integer$ window2) ///Calc hetero between 2 genomes only for a certain window
+{
+	muts1 = genome1.mutations;
+	muts1 = muts1[muts1.position>=window1 & muts1.position<=window2];
+	
+	muts2 = genome2.mutations;
+	muts2 = muts2[muts2.position>=window1 & muts2.position<=window2];
+	
+	unshared = setSymmetricDifference(muts1, muts2);
+	count = size(unshared);
+	return count;
+}
+
+
+// Heterozygosity count window
+function (s)individualHeteroCountWindow( o Individuals, integer$ window1, integer$ window2)
+{
+	hetero_count = c();
+	for (individual in Individuals)
+	{
+		haplosomes = individual.haplosomes;
+		individual_hetero_count = HeteroCountWindow(haplosomes[0], haplosomes[1], window1 , window2);
+		hetero_count = c(hetero_count,individual_hetero_count);
+	}
+	
+	out= sim.cycle + "\t" + Individuals.pedigreeID + "\t" + window1 + "\t" + window2 +"\t" + hetero_count;
+	return(out);
+}
+
+function (f) getRlzLoad(o indv)
+{
+	mut=indv.uniqueMutations;
+	if(length(mut)> 0){
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutS=mut.selectionCoeff;
+		mutH=mut.mutationType.dominanceCoeff;
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		return(relzLoad_f2);
+	} else {return(float(0));}
+}
+
+
+
+function (f) getMskLoad(o indv)
+{
+	mut=indv.uniqueMutations;
+	if(length(mut)> 0){
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutS=mut.selectionCoeff;
+		mutH=mut.mutationType.dominanceCoeff;
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		return(mskLoad_f2);
+	} else {return(float(0));}
+}
+
+
+function (s) mng_rls_load_EFS(o pop, i MINage, i MAXage, i minSize)
+{
+	cand_parents=pop.individuals[pop.individuals.age>=MINage & pop.individuals.age<=MAXage];
+	indvLOAD=getIndvLoadTarget(cand_parents);
+	totLOAD=asFloat(sapply(indvLOAD,'strsplit(applyValue,"\t")[6];'));
+	rlsLOAD=asFloat(sapply(indvLOAD,'strsplit(applyValue,"\t")[4];'));
+	// Directly rank parents
+	for(i in 0:(length(rlsLOAD)-1)){
+		ind=cand_parents[i];
+		ind.setValue("rlsLOAD",rlsLOAD[i]);
+	}
+	// Assign indv to families
+	for(i in cand_parents){
+		i.setValue("fam",paste0(i.pedigreeParentIDs[0],"_",i.pedigreeParentIDs[1]));
+	}
+	UNIQUE=unique(cand_parents.getValue("fam"));
+	//	print("families N="+length(UNIQUE));
+	// Loop families and retain individuals with less soft load
+	sel_parents=c();
+	for(fam in UNIQUE){
+		fam_indv=cand_parents[which(cand_parents.getValue("fam")==fam)];
+		//		print("fam N="+length(fam_indv));
+		if(length(fam_indv)>2){
+			//			print("rslLOAD="+fam_indv.getValue("rlsLOAD"));
+			cutLoad=sort(fam_indv.getValue("rlsLOAD"),ascending=T)[1];
+			//			print("cutLoad="+cutLoad);
+			fam_indv=fam_indv[fam_indv.getValue("rlsLOAD")<=cutLoad];
+			//			print("sel fam N="+length(fam_indv));
+		}
+		sel_parents=c(sel_parents,fam_indv);
+	}
+	if (length(sel_parents) >= minSize){
+		parents = sample(sel_parents, length(sel_parents));
+		BREEDERS=c();
+		while(length(parents)>=2){
+			indv=sample(parents,1);
+			relat=indv.relatedness(parents);
+			MINrelat=min(relat);
+			if(MINrelat==0){NonRelatRnd=sample(parents[relat==0],1);};
+			if(MINrelat<=0.25){NonRelatRnd=sample(parents[relat<=0.25],1);};
+			if(MINrelat<0.5){NonRelatRnd=sample(parents[relat<0.5],1);};
+			if(MINrelat==0.5){break;};
+			parents=setSymmetricDifference(parents,c(indv,NonRelatRnd));
+			litterSize = rgamma(1,mu_cond,k_shape);
+			//			print(c(paste(indv), paste(NonRelatRnd),paste(litterSize)));
+			for (j in 1:litterSize)
+			{
+				pop.addCrossed(indv, NonRelatRnd);
+			}
+			BREEDERS_X=sim.cycle+"\t"+indv.pedigreeID+"\t"+paste(indv.pedigreeParentIDs,sep="_")+"\t"+paste(indv.pedigreeGrandparentIDs,sep="_")+"\t"+NonRelatRnd.pedigreeID+"\t"+paste(NonRelatRnd.pedigreeParentIDs,sep="_")+"\t"+paste(NonRelatRnd.pedigreeGrandparentIDs,sep="_")+"\t"+litterSize+"\t"+indv.getValue("rlsLOAD")+"\t"+NonRelatRnd.getValue("rlsLOAD")+"\t"+"NA"+"\t"+"NA";
+			BREEDERS=c(BREEDERS,BREEDERS_X);
+		}
+		return(BREEDERS);
+	} else {return(NULL);}
+}
+
+
+
+
+function (s) mng_age(o pop, i MINage, i MAXage, i minSize)
+{
+	sel_parents=pop.individuals[pop.individuals.age>=MINage & pop.individuals.age<=MAXage];
+	if (length(sel_parents) >= minSize){
+		parents = sample(sel_parents, length(sel_parents));
+		// avoid relatdness
+		while(length(parents)>=2){
+			indv=sample(parents,1);
+			relat=indv.relatedness(parents);
+			MINrelat=min(relat);
+			if(MINrelat==0){NonRelatRnd=sample(parents[relat==0],1);};
+			if(MINrelat<=0.25){NonRelatRnd=sample(parents[relat<=0.25],1);};
+			if(MINrelat<0.5){NonRelatRnd=sample(parents[relat<0.5],1);};
+			if(MINrelat==0.5){break;};
+			parents=setSymmetricDifference(parents,c(indv,NonRelatRnd));
+			litterSize = rgamma(1,mu_cond,k_shape);
+			//			print(c(paste(indv), paste(NonRelatRnd),paste(litterSize)));
+			for (j in 1:litterSize)
+			{
+				pop.addCrossed(indv, NonRelatRnd);
+			}
+		}
+		return(c(sim.cycle + "\t" + mng_captive + "\t" + "mng_age" + "\t" + sel_parents.size()));
+	} else {return(NULL);}
+}
+
+function (s) mng_random(o pop, i sampleSize, i minSize)
+{
+	sel_parents=pop.sampleIndividuals(sampleSize);
+	if (length(sel_parents) >= minSize){
+		parents = sample(sel_parents, length(sel_parents));
+		// avoid relatdness
+		while(length(parents)>=2){
+			indv=sample(parents,1);
+			relat=indv.relatedness(parents);
+			MINrelat=min(relat);
+			if(MINrelat==0){NonRelatRnd=sample(parents[relat==0],1);};
+			if(MINrelat<=0.25){NonRelatRnd=sample(parents[relat<=0.25],1);};
+			if(MINrelat<0.5){NonRelatRnd=sample(parents[relat<0.5],1);};
+			if(MINrelat==0.5){break;};
+			parents=setSymmetricDifference(parents,c(indv,NonRelatRnd));
+			litterSize = rgamma(1,mu_cond,k_shape);
+			//			print(c(paste(indv), paste(NonRelatRnd),paste(litterSize)));
+			for (j in 1:litterSize)
+			{
+				pop.addCrossed(indv, NonRelatRnd);
+			}
+		}		return(c(sim.cycle + "\t" + mng_captive + "\t" + "mng_rndm" + "\t" + sel_parents.size()));
+	} else {return(NULL);}
+}
+
+function (s) getIndvLoadTarget(o target_indv)
+{
+	mNeutral=sim.mutationTypes[sim.mutationTypes.id==mut_neutral];
+	pop_indv=target_indv;
+	out=c();
+	pop=unique(target_indv.subpopulation);
+	for(indv in pop_indv){
+		mut=indv.uniqueMutations;
+		mut=mut[mut.mutationType!=mNeutral];
+		if(length(mut)==0){next;}
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutOrgGen=mut.originTick;
+		mutOrgPop=mut.subpopID;
+		mutS=mut.selectionCoeff;
+		mutH=mut.mutationType.dominanceCoeff;
+		mutFreq=sim.mutationFrequencies(pop,mut);
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		indv_out=sim.cycle +"\t"+ pop.id +"\t"+ index +"\t"+ age +"\t"+ relzLoad_f2 +"\t"+ mskLoad_f2 +"\t"+ totalLoad_f2 +"\t"+ pop.cachedFitness(indv.index);
+		
+		out=c(out,indv_out);
+	}
+	return(out);
+}
+
+function (s) getROH(o pop, o individuals, i ROHcutoff, i winS, i winE)
+{
+	pop_indv=individuals;
+	out=c();
+	chromL=winE;
+	ind_ROH=c();
+	for(indv in pop_indv){
+		if(community.modelType=="WF"){age="NA";}else{age=indv.age;}
+		// ROH
+		indm = sortBy(indv.haplosomes.mutations, "position");
+		indm = indm[indm.position>=winS & indm.position<=winE];
+		indm_uniq = unique(indm);
+		genotype = sapply(indm_uniq, "sum(indm == applyValue);");
+		if (isNULL(genotype)) {
+			ind_ROH = c(ind_ROH, "NA");
+			next;
+		}
+		ID_het = (genotype == 1); //outputs T/F for genotypes if they are het or homDer
+		ID_homDer = (genotype == 2);
+		pos_het = indm_uniq.position[ID_het]; //outputs positions of heterozgoys genotypes
+		startpos = c(winS, pos_het); //adds 0 to beggining of vector of hets
+		endpos = c(pos_het, winE); //adds last position in genome to vector of hets
+		pos_het_diff = endpos - startpos;
+		ROH_startpos = startpos[pos_het_diff > ROHcutoff]; //filter out startpos that dont correspond to ROH > ROH_length
+		ROH_endpos = endpos[pos_het_diff > ROHcutoff];
+		ROH_length = pos_het_diff[pos_het_diff > ROHcutoff]; //vector of ROHs for each individual
+		SROH = sum(ROH_length);
+		NROH = length(ROH_length);
+		FROH=SROH/winE;
+		if(NROH>0){
+			ROH_coords=sapply(0:(length(ROH_startpos)-1),"paste(ROH_startpos[applyValue],ROH_endpos[applyValue],sep='-');");
+		} else {ROH_coords=0;}
+		indv_out=sim.cycle +"\t"+ pop.id +"\t"+ indv.pedigreeID +"\t"+ age +"\t"+ SROH +"\t"+ NROH +"\t"+ FROH +"\t"+ paste(ROH_length,sep=",") +"\t"+ paste(ROH_coords,sep=",") +"\t"+ ROHcutoff +"\t"+ winS +"\t"+ winE;
+		out=c(out,indv_out);
+	}
+	if(sum(isNULL(out)>0)){out="NA";}
+	return(out);
+}
+
+function (s) getROH_Fitness(o pop, o individuals, i ROHcutoff, i winS, i winE)
+{
+	out = c();
+	for (indv in individuals)
+	{
+		age = (community.modelType=="WF") ? "NA" else indv.age;
+		
+		// Added: sex (requires initializeSex("A") in initialize())
+		sex = indv.sex;
+		
+		// cached genetic fitness from SLiM
+		fit = pop.cachedFitness(indv.index);
+		
+		// recruitment tracking fields
+		initRecruitTrack(indv);
+		recruited  = indv.getValue("recruited");
+		recruitGen = indv.getValue("recruitGen");
+		nBreed     = indv.getValue("nBreed");
+		nOff       = indv.getValue("nOff");
+		
+		// Added: a recruitment-like outcome 
+		// (1 if individual produced >=1 offspring ever)
+		hadOffspring = asInteger(nOff > 0);
+		
+		// Gather mutations in the window and compute ROH exactly as in getROH()
+		indm = sortBy(indv.haplosomes.mutations, "position");
+		indm = indm[indm.position >= winS & indm.position <= winE];
+		
+		// If no mutations in window, match getROH() & output NA (no ROH inference possible)
+		if (size(indm) == 0)
+		{
+			SROH = "NA";
+			NROH = "NA";
+			FROH = "NA";
+			ROH_length = "NA";
+			ROH_coords = "NA";
+			
+			indv_out = sim.cycle + "\t" + pop.id + "\t" + indv.pedigreeID + "\t" + sex + "\t" + age + "\t" +
+				SROH + "\t" + NROH + "\t" + FROH + "\t" + fit + "\t" +
+				recruited + "\t" + hadOffspring + "\t" + recruitGen + "\t" + nBreed + "\t" + nOff + "\t" +
+				ROH_length + "\t" + ROH_coords + "\t" + ROHcutoff + "\t" + winS + "\t" + winE;
+			
+			out = c(out, indv_out);
+			next;
+		}
+		
+		indm_uniq = unique(indm);
+		genotype = sapply(indm_uniq, "sum(indm == applyValue);");
+		
+		// If something weird happens, still output a line (don’t silently drop)
+		if (isNULL(genotype))
+		{
+			SROH = 0;
+			NROH = 0;
+			FROH = 0.0;
+			ROH_length = 0;
+			ROH_coords = 0;
+			
+			indv_out = sim.cycle + "\t" + pop.id + "\t" + indv.pedigreeID + "\t" + sex + "\t" + age + "\t" +
+				SROH + "\t" + NROH + "\t" + FROH + "\t" + fit + "\t" +
+				recruited + "\t" + hadOffspring + "\t" + recruitGen + "\t" + nBreed + "\t" + nOff + "\t" +
+				ROH_length + "\t" + ROH_coords + "\t" + ROHcutoff + "\t" + winS + "\t" + winE;
+			
+			out = c(out, indv_out);
+			next;
+		}
+		
+		ID_het = (genotype == 1);
+		pos_het = indm_uniq.position[ID_het];
+		
+		startpos = c(winS, pos_het);
+		endpos   = c(pos_het, winE);
+		
+		pos_het_diff = endpos - startpos;
+		
+		ROH_startpos = startpos[pos_het_diff > ROHcutoff];
+		ROH_endpos   = endpos[pos_het_diff > ROHcutoff];
+		ROH_length   = pos_het_diff[pos_het_diff > ROHcutoff];
+		
+		SROH = sum(ROH_length);
+		NROH = length(ROH_length);
+		FROH = SROH / winE;
+		
+		if (NROH > 0)
+			ROH_coords = sapply(0:(length(ROH_startpos)-1),
+			"paste(ROH_startpos[applyValue], ROH_endpos[applyValue], sep='-');");
+		else
+			ROH_coords = 0;
+		
+		indv_out = sim.cycle + "\t" + pop.id + "\t" + indv.pedigreeID + "\t" + sex + "\t" + age + "\t" +
+			SROH + "\t" + NROH + "\t" + FROH + "\t" + fit + "\t" +
+			recruited + "\t" + hadOffspring + "\t" + recruitGen + "\t" + nBreed + "\t" + nOff + "\t" +
+			paste(ROH_length, sep=",") + "\t" + paste(ROH_coords, sep=",") + "\t" +
+			ROHcutoff + "\t" + winS + "\t" + winE;
+		
+		out = c(out, indv_out);
+	}
+	
+	if (sum(isNULL(out) > 0))
+		out = "NA";
+	return(out);
+}
+
+// Added for comparison with genomic output - big output file with lots of key parameters
+
+function (s) getIndvGenomeMetrics(o pop, o individuals, i ROHcutoff, i winS, i winE, i chrEnd)
+{
+	out = c();
+	mNeutral = sim.mutationTypes[sim.mutationTypes.id == mut_neutral];
+	
+	for (indv in individuals)
+	{
+		age = indv.age;
+		sex = indv.sex;
+		fit = pop.cachedFitness(indv.index);
+		
+		// recruitment and breeding tracking fields already used elsewhere
+		initRecruitTrack(indv);
+		recruited  = indv.getValue("recruited");
+		recruitGen = indv.getValue("recruitGen");
+		nBreed     = indv.getValue("nBreed");
+		nOff       = indv.getValue("nOff");
+		hadOffspring = asInteger(nOff > 0);
+		
+		
+		// individual heterozygosity
+		// use the same chromosome-only logic as getIndvMetrics()
+		
+		muts0 = indv.haplosomes[0].mutations;
+		muts1 = indv.haplosomes[1].mutations;
+		
+		muts0 = muts0[muts0.position < chrEnd];
+		muts1 = muts1[muts1.position < chrEnd];
+		
+		shared_count = sum(match(muts0, muts1) >= 0);
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		Het_indv = unshared_count / chrEnd;
+		
+		
+		// ROH / FROH using the chosen cutoff
+		// keeping raw ROH lengths & coords so I  can later derive >1 Mb if wanted - to match genomic data exactly - currently 500 kb 
+		
+		indm = sortBy(indv.haplosomes.mutations, "position");
+		indm = indm[indm.position >= winS & indm.position <= winE];
+		
+		if (size(indm) == 0)
+		{
+			SROH = 0;
+			NROH = 0;
+			FROH = 0.0;
+			ROH_length = 0;
+			ROH_coords = 0;
+		}
+		else
+		{
+			indm_uniq = unique(indm);
+			genotype = sapply(indm_uniq, "sum(indm == applyValue);");
+			
+			if (isNULL(genotype))
+			{
+				SROH = 0;
+				NROH = 0;
+				FROH = 0.0;
+				ROH_length = 0;
+				ROH_coords = 0;
+			}
+			else
+			{
+				ID_het = (genotype == 1);
+				pos_het = indm_uniq.position[ID_het];
+				
+				startpos = c(winS, pos_het);
+				endpos   = c(pos_het, winE);
+				pos_het_diff = endpos - startpos;
+				
+				ROH_startpos = startpos[pos_het_diff > ROHcutoff];
+				ROH_endpos   = endpos[pos_het_diff > ROHcutoff];
+				ROH_length   = pos_het_diff[pos_het_diff > ROHcutoff];
+				
+				SROH = sum(ROH_length);
+				NROH = length(ROH_length);
+				FROH = SROH / winE;
+				
+				if (NROH > 0)
+					ROH_coords = sapply(0:(length(ROH_startpos)-1),
+					"paste(ROH_startpos[applyValue], ROH_endpos[applyValue], sep='-');");
+				else
+					ROH_coords = 0;
+			}
+		}
+		
+		
+		// direct individual deleterious site/allele counts
+		// all deleterious = all non-neutral mutations
+		// moderate = 1e-3 <= |s| < 1e-2
+		// strong   = |s| >= 1e-2
+		
+		mut = indv.uniqueMutations;
+		mut = mut[mut.mutationType != mNeutral];
+		
+		nHetDelSites_all = 0;
+		nHomDelSites_all = 0;
+		nTotalDelAlleles_all = 0;
+		
+		nHetDelSites_mod = 0;
+		nHomDelSites_mod = 0;
+		nTotalDelAlleles_mod = 0;
+		
+		nHetDelSites_strong = 0;
+		nHomDelSites_strong = 0;
+		nTotalDelAlleles_strong = 0;
+		
+		if (length(mut) > 0)
+		{
+			has0 = indv.haplosomes[0].containsMutations(mut);
+			has1 = indv.haplosomes[1].containsMutations(mut);
+			
+			isHet = (has0 & !has1) | (!has0 & has1);
+			isHom = (has0 & has1);
+			
+			absS = abs(mut.selectionCoeff);
+			
+			// all deleterious
+			nHetDelSites_all = sum(isHet);
+			nHomDelSites_all = sum(isHom);
+			nTotalDelAlleles_all = nHetDelSites_all + 2 * nHomDelSites_all;
+			
+			// moderately deleterious
+			isMod = (absS >= 1e-3 & absS < 1e-2);
+			nHetDelSites_mod = sum(isHet & isMod);
+			nHomDelSites_mod = sum(isHom & isMod);
+			nTotalDelAlleles_mod = nHetDelSites_mod + 2 * nHomDelSites_mod;
+			
+			// strongly deleterious
+			isStrong = (absS >= 1e-2);
+			nHetDelSites_strong = sum(isHet & isStrong);
+			nHomDelSites_strong = sum(isHom & isStrong);
+			nTotalDelAlleles_strong = nHetDelSites_strong + 2 * nHomDelSites_strong;
+		}
+		
+		yr = asInteger(minYear + (sim.cycle - g_T_demo));
+		
+		indv_out = sim.cycle + "\t" + yr + "\t" + pop.id + "\t" + indv.pedigreeID + "\t" +
+			sex + "\t" + age + "\t" + Het_indv + "\t" +
+			SROH + "\t" + NROH + "\t" + FROH + "\t" +
+			paste(ROH_length, sep=",") + "\t" + paste(ROH_coords, sep=",") + "\t" +
+			fit + "\t" + recruited + "\t" + hadOffspring + "\t" + recruitGen + "\t" + nBreed + "\t" + nOff + "\t" +
+			nHetDelSites_all + "\t" + nHomDelSites_all + "\t" + nTotalDelAlleles_all + "\t" +
+			nHetDelSites_mod + "\t" + nHomDelSites_mod + "\t" + nTotalDelAlleles_mod + "\t" +
+			nHetDelSites_strong + "\t" + nHomDelSites_strong + "\t" + nTotalDelAlleles_strong;
+		
+		out = c(out, indv_out);
+	}
+	return(out);
+}
+
+function (s) getIndvMetrics(o target_indv, i chrEnd)
+{
+	mNeutral=sim.mutationTypes[sim.mutationTypes.id==mut_neutral];
+	pop_indv=target_indv;
+	out=c();
+	pop=unique(target_indv.subpopulation);
+	for(indv in pop_indv){
+		mut=indv.uniqueMutations;
+		mut=mut[mut.mutationType!=mNeutral];
+		if(length(mut)==0){next;}
+		index=indv.pedigreeID;
+		age=indv.age;
+		mutOrgGen=mut.originTick;
+		mutOrgPop=mut.subpopID;
+		mutS=mut.selectionCoeff;
+		mutH=mut.mutationType.dominanceCoeff;
+		mutFreq=sim.mutationFrequencies(pop,mut);
+		HomRef=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();");
+		HomAlt=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Het=sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==T&indv.haplosomes[1].containsMutations(applyValue)==F)/indv.size();")+sapply(mut, "sum(indv.haplosomes[0].containsMutations(applyValue)==F&indv.haplosomes[1].containsMutations(applyValue)==T)/indv.size();");
+		Lmut=length(mut);
+		f11=sum(HomAlt)/Lmut;
+		sHom=mean(abs(mutS[HomAlt==1]));
+		if(isNULL(sHom)){sHom=0;}
+		f01=sum(Het)/Lmut;
+		shHet=mean(abs(mutS[Het==1])*mutH[Het==1]);
+		if(isNULL(shHet)){shHet=0;}
+		sHet=mean(abs(mutS[Het==1]));
+		if(isNULL(sHet)){sHet=0;}
+		
+		relzLoad_f2=Lmut*(f11*sHom+f01*shHet);
+		mskLoad_f2=Lmut*f01*((0.5*sHet)-shHet);
+		totalLoad_f2=Lmut*(f11*sHom+(0.5*f01)*sHet);
+		
+		// Calculate the heterozygosity of this individual
+		muts0 = indv.haplosomes[0].mutations;
+		muts1 = indv.haplosomes[1].mutations;
+		// only mutations in chromsome part
+		muts0 = muts0[muts0.position<chrEnd];
+		muts1 = muts1[muts1.position<chrEnd];
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / chrEnd;
+		
+		indv_out=sim.cycle +"\t"+ pop.id +"\t"+ index +"\t"+ age +"\t"+ relzLoad_f2 +"\t"+ mskLoad_f2 +"\t"+ totalLoad_f2 +"\t"+ pop.cachedFitness(indv.index) +"\t"+ pi_ind;
+		
+		out=c(out,indv_out);
+	}
+	return(out);
+}
+
+
+
+
+// Recruitment tracking helpers
+// Keeps only simple individual-level reproductive tracking.
+// Removed nRecOff because tracking offspring that later recruit is slow.
+
+function (void) initRecruitTrack(o<Individual>$ ind)
+{
+	if (isNULL(ind.getValue("recruited")))  ind.setValue("recruited", 0);
+	if (isNULL(ind.getValue("recruitGen"))) ind.setValue("recruitGen", -1);
+	if (isNULL(ind.getValue("nBreed")))     ind.setValue("nBreed", 0);
+	if (isNULL(ind.getValue("nOff")))       ind.setValue("nOff", 0);
+}
+
+function (void) markRecruited(o<Individual>$ ind)
+{
+	initRecruitTrack(ind);
+	
+	if (ind.getValue("recruited") == 0)
+	{
+		ind.setValue("recruited", 1);
+		ind.setValue("recruitGen", sim.cycle);
+	}
+	
+	// Count each breeding event
+	ind.setValue("nBreed", ind.getValue("nBreed") + 1);
+}
+
+function (void) addOffspringCount(o<Individual>$ ind)
+{
+	initRecruitTrack(ind);
+	ind.setValue("nOff", ind.getValue("nOff") + 1);
+}
